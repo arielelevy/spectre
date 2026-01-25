@@ -63,66 +63,78 @@ def run_worker() -> None:
     client = _redis_client()
     _ensure_group(client)
 
-    while True:
-        try:
-            streams = (
-                cast(
-                    list,
-                    client.xreadgroup(
-                        GITHUB_QUEUE_GROUP,
-                        GITHUB_QUEUE_CONSUMER,
-                        {GITHUB_QUEUE_STREAM: ">"},
-                        count=1,
-                        block=GITHUB_QUEUE_BLOCK_MS,
-                    ),
+    try:
+        while True:
+            try:
+                streams = (
+                    cast(
+                        list,
+                        client.xreadgroup(
+                            GITHUB_QUEUE_GROUP,
+                            GITHUB_QUEUE_CONSUMER,
+                            {GITHUB_QUEUE_STREAM: ">"},
+                            count=1,
+                            block=GITHUB_QUEUE_BLOCK_MS,
+                        ),
+                    )
+                    or []
                 )
-                or []
-            )
 
-            if not streams:
-                try:
-                    if client.xlen(GITHUB_QUEUE_STREAM) == 0:
-                        logger.info("Stream empty, seeding initial job")
-                        _schedule_next(client)
-                except redis.RedisError as e:
-                    logger.error(f"Redis error checking stream length: {e}")
-                time.sleep(GITHUB_QUEUE_IDLE_SLEEP)
-                continue
-
-            for _, messages in streams:
-                for message_id, fields in messages:
-                    logger.info(f"Processing message {message_id}")
+                if not streams:
                     try:
-                        payload = _parse_payload(fields)
-                        minutes = int(payload.get("window_minutes", 10))
+                        if client.xlen(GITHUB_QUEUE_STREAM) == 0:
+                            logger.info("Stream empty, seeding initial job")
+                            _schedule_next(client)
+                    except redis.RedisError as e:
+                        logger.error(f"Redis error checking stream length: {e}")
+                    time.sleep(GITHUB_QUEUE_IDLE_SLEEP)
+                    continue
 
-                        logger.info(
-                            f"Fetching public events for last {minutes} minutes"
-                        )
-                        public_events = fetch_public_events(minutes=minutes)
-                        logger.info(f"Found {len(public_events)} events")
+                for _, messages in streams:
+                    for message_id, fields in messages:
+                        logger.info(f"Processing message {message_id}")
+                        try:
+                            payload = _parse_payload(fields)
+                            minutes = int(payload.get("window_minutes", 10))
 
-                        event_records = [
-                            GitHubEvent(event_type="github.public_event", payload=item)
-                            for item in public_events
-                        ]
+                            logger.info(
+                                f"Fetching public events for last {minutes} minutes"
+                            )
+                            public_events = fetch_public_events(minutes=minutes)
+                            logger.info(f"Found {len(public_events)} events")
 
-                        count = write_events(event_records)
-                        logger.info(f"Persisted {count} events to ClickHouse")
+                            event_records = [
+                                GitHubEvent(
+                                    event_type="github.public_event", payload=item
+                                )
+                                for item in public_events
+                            ]
 
-                        client.xack(GITHUB_QUEUE_STREAM, GITHUB_QUEUE_GROUP, message_id)
-                    except Exception as e:
-                        logger.error(
-                            f"Failed to process message {message_id}: {e}",
-                            exc_info=True,
-                        )
-                        # Decide if we want to ACK failed messages or use a dead-letter queue (DLQ)
-                        # For now, we don't ACK so it gets retried (or stuck, beware)
-                        time.sleep(1)
+                            count = write_events(event_records)
+                            logger.info(f"Persisted {count} events to ClickHouse")
 
-        except Exception as e:
-            logger.error(f"Worker loop error: {e}", exc_info=True)
-            time.sleep(5)
+                            client.xack(
+                                GITHUB_QUEUE_STREAM, GITHUB_QUEUE_GROUP, message_id
+                            )
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to process message {message_id}: {e}",
+                                exc_info=True,
+                            )
+                            # Decide if we want to ACK failed messages or use a dead-letter queue (DLQ)
+                            # For now, we don't ACK so it gets retried (or stuck, beware)
+                            time.sleep(1)
+
+            except Exception as e:
+                logger.error(f"Worker loop error: {e}", exc_info=True)
+                time.sleep(5)
+    except KeyboardInterrupt:
+        logger.info("Shutdown requested; stopping worker")
+    finally:
+        try:
+            client.close()
+        except Exception:
+            logger.exception("Failed to close Redis connection")
 
 
 if __name__ == "__main__":

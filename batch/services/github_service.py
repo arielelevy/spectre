@@ -13,7 +13,7 @@ class GitHubConfig:
     token: str
     base_url: str = "https://api.github.com"
     user_agent: str = "SpectreIntelligence/1.0"
-    per_page: int = 50
+    per_page: int = 100
     timeout_seconds: int = 30
 
 
@@ -95,9 +95,9 @@ class GitHubClient:
         response.raise_for_status()
         return response.json()
 
-    def list_public_events(self) -> List[dict]:
+    def list_public_events(self, page: int = 1) -> List[dict]:
         url = f"{self.config.base_url}/events"
-        params: Dict[str, Any] = {"per_page": self.config.per_page}
+        params: Dict[str, Any] = {"per_page": self.config.per_page, "page": page}
         response = requests.get(
             url,
             headers=self._headers(),
@@ -210,12 +210,7 @@ def run_public_ingest(minutes: int = 10) -> Dict[str, int]:
     client = GitHubClient(github_config)
     publisher = RedisStreamPublisher(redis_config)
 
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
-    public_events = [
-        item
-        for item in client.list_public_events()
-        if "created_at" in item and _parse_github_time(item["created_at"]) >= cutoff
-    ]
+    public_events = fetch_public_events(minutes=minutes, client=client)
 
     events = build_public_events(public_events)
     publisher.publish_batch(events)
@@ -227,15 +222,39 @@ def run_public_ingest(minutes: int = 10) -> Dict[str, int]:
     }
 
 
-def fetch_public_events(minutes: int = 10) -> List[dict]:
-    github_config = GitHubConfig(token=os.getenv("GITHUB_TOKEN", ""))
-    client = GitHubClient(github_config)
+def fetch_public_events(
+    minutes: int = 10, client: Optional[GitHubClient] = None
+) -> List[dict]:
+    if client is None:
+        github_config = GitHubConfig(token=os.getenv("GITHUB_TOKEN", ""))
+        client = GitHubClient(github_config)
+
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
-    return [
-        item
-        for item in client.list_public_events()
-        if "created_at" in item and _parse_github_time(item["created_at"]) >= cutoff
-    ]
+    events: List[dict] = []
+
+    page = 1
+    while True:
+        page_items = client.list_public_events(page=page)
+        if not page_items:
+            break
+
+        oldest_time: Optional[datetime] = None
+        for item in page_items:
+            created_at = item.get("created_at")
+            if not created_at:
+                continue
+            created_time = _parse_github_time(created_at)
+            if oldest_time is None or created_time < oldest_time:
+                oldest_time = created_time
+            if created_time >= cutoff:
+                events.append(item)
+
+        if oldest_time and oldest_time < cutoff:
+            break
+
+        page += 1
+
+    return events
 
 
 def main() -> None:
