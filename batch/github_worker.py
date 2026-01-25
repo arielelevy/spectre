@@ -34,7 +34,9 @@ def _ensure_group(client) -> None:
         client.xgroup_create(
             GITHUB_QUEUE_STREAM, GITHUB_QUEUE_GROUP, id="0", mkstream=True
         )
-        logger.info(f"Created consumer group {GITHUB_QUEUE_GROUP} on stream {GITHUB_QUEUE_STREAM}")
+        logger.info(
+            f"Created consumer group {GITHUB_QUEUE_GROUP} on stream {GITHUB_QUEUE_STREAM}"
+        )
     except redis.ResponseError as exc:
         if "BUSYGROUP" not in str(exc):
             raise
@@ -93,23 +95,27 @@ def run_worker() -> None:
                     try:
                         payload = _parse_payload(fields)
                         minutes = int(payload.get("window_minutes", 10))
-                        
-                        logger.info(f"Fetching public events for last {minutes} minutes")
+
+                        logger.info(
+                            f"Fetching public events for last {minutes} minutes"
+                        )
                         public_events = fetch_public_events(minutes=minutes)
                         logger.info(f"Found {len(public_events)} events")
-                        
+
                         event_records = [
                             GitHubEvent(event_type="github.public_event", payload=item)
                             for item in public_events
                         ]
-                        
+
                         count = write_events(event_records)
                         logger.info(f"Persisted {count} events to ClickHouse")
-                        
+
                         client.xack(GITHUB_QUEUE_STREAM, GITHUB_QUEUE_GROUP, message_id)
-                        _schedule_next(client)
                     except Exception as e:
-                        logger.error(f"Failed to process message {message_id}: {e}", exc_info=True)
+                        logger.error(
+                            f"Failed to process message {message_id}: {e}",
+                            exc_info=True,
+                        )
                         # Decide if we want to ACK failed messages or use a dead-letter queue (DLQ)
                         # For now, we don't ACK so it gets retried (or stuck, beware)
                         time.sleep(1)
@@ -117,7 +123,6 @@ def run_worker() -> None:
         except Exception as e:
             logger.error(f"Worker loop error: {e}", exc_info=True)
             time.sleep(5)
-
 
 
 if __name__ == "__main__":
