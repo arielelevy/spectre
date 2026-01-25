@@ -1,5 +1,6 @@
 import json
 import os
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
@@ -15,6 +16,12 @@ class GitHubConfig:
     user_agent: str = "SpectreIntelligence/1.0"
     per_page: int = 100
     timeout_seconds: int = 30
+
+    def __post_init__(self) -> None:
+        if self.per_page > 100:
+            self.per_page = 100
+        if self.per_page < 1:
+            self.per_page = 1
 
 
 @dataclass
@@ -107,6 +114,47 @@ class GitHubClient:
         response.raise_for_status()
         return response.json()
 
+    def list_repository_events(
+        self, owner: str, repo: str, page: int = 1
+    ) -> List[dict]:
+        url = f"{self.config.base_url}/repos/{owner}/{repo}/events"
+        params: Dict[str, Any] = {"per_page": self.config.per_page, "page": page}
+        response = requests.get(
+            url,
+            headers=self._headers(),
+            params=params,
+            timeout=self.config.timeout_seconds,
+        )
+        if response.status_code == 422:
+            return []
+        response.raise_for_status()
+        return response.json()
+
+    def search_repositories(
+        self,
+        query: str,
+        sort: str = "stars",
+        order: str = "desc",
+        page: int = 1,
+    ) -> List[dict]:
+        url = f"{self.config.base_url}/search/repositories"
+        params: Dict[str, Any] = {
+            "q": query,
+            "sort": sort,
+            "order": order,
+            "per_page": self.config.per_page,
+            "page": page,
+        }
+        response = requests.get(
+            url,
+            headers=self._headers(),
+            params=params,
+            timeout=self.config.timeout_seconds,
+        )
+        response.raise_for_status()
+        payload = response.json() if response.content else {}
+        return payload.get("items", [])
+
 
 class RedisStreamPublisher:
     def __init__(self, config: RedisStreamConfig):
@@ -167,7 +215,10 @@ def _parse_github_time(value: str) -> datetime:
 
 
 def run_ingest(owner: str, repo: str, since: Optional[str] = None) -> Dict[str, int]:
-    github_config = GitHubConfig(token=os.getenv("GITHUB_TOKEN", ""))
+    github_config = GitHubConfig(
+        token=os.getenv("GITHUB_TOKEN", ""),
+        per_page=int(os.getenv("GITHUB_PER_PAGE", "100")),
+    )
     redis_config = RedisStreamConfig(
         url=os.getenv("REDIS_URL", "redis://localhost:6379/0")
     )
@@ -202,7 +253,10 @@ def run_ingest(owner: str, repo: str, since: Optional[str] = None) -> Dict[str, 
 
 
 def run_public_ingest(minutes: int = 10) -> Dict[str, int]:
-    github_config = GitHubConfig(token=os.getenv("GITHUB_TOKEN", ""))
+    github_config = GitHubConfig(
+        token=os.getenv("GITHUB_TOKEN", ""),
+        per_page=int(os.getenv("GITHUB_PER_PAGE", "100")),
+    )
     redis_config = RedisStreamConfig(
         url=os.getenv("REDIS_URL", "redis://localhost:6379/0")
     )
@@ -226,7 +280,10 @@ def fetch_public_events(
     minutes: int = 10, client: Optional[GitHubClient] = None
 ) -> List[dict]:
     if client is None:
-        github_config = GitHubConfig(token=os.getenv("GITHUB_TOKEN", ""))
+        github_config = GitHubConfig(
+            token=os.getenv("GITHUB_TOKEN", ""),
+            per_page=int(os.getenv("GITHUB_PER_PAGE", "100")),
+        )
         client = GitHubClient(github_config)
 
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
@@ -257,6 +314,84 @@ def fetch_public_events(
     return events
 
 
+def fetch_repo_events_pages(
+    minutes: int = 10, client: Optional[GitHubClient] = None
+) -> Iterable[List[dict]]:
+    if client is None:
+        github_config = GitHubConfig(
+            token=os.getenv("GITHUB_TOKEN", ""),
+            per_page=int(os.getenv("GITHUB_PER_PAGE", "100")),
+        )
+        client = GitHubClient(github_config)
+
+    del minutes
+    search_query = os.getenv("GITHUB_REPO_SEARCH_QUERY", "stars:>5000")
+    search_sort = os.getenv("GITHUB_REPO_SEARCH_SORT", "stars")
+    search_order = os.getenv("GITHUB_REPO_SEARCH_ORDER", "desc")
+    max_repos = int(os.getenv("GITHUB_REPO_SEARCH_MAX_REPOS", "100"))
+    max_search_pages = int(os.getenv("GITHUB_REPO_SEARCH_PAGES", "1"))
+
+    logger.info(
+        "Repo ingest: query=%s sort=%s order=%s max_repos=%s search_pages=%s",
+        search_query,
+        search_sort,
+        search_order,
+        max_repos,
+        max_search_pages,
+    )
+
+    repos: List[dict] = []
+    for page in range(1, max_search_pages + 1):
+        logger.info("Repo search page %s", page)
+        items = client.search_repositories(
+            search_query, sort=search_sort, order=search_order, page=page
+        )
+        if not items:
+            break
+        repos.extend(items)
+        logger.info("Repo search page %s returned %s items", page, len(items))
+        if len(repos) >= max_repos:
+            repos = repos[:max_repos]
+            break
+
+    logger.info("Repo search resolved %s repos", len(repos))
+
+    for repo in repos:
+        full_name = repo.get("full_name")
+        if not full_name or "/" not in full_name:
+            continue
+        owner, name = full_name.split("/", 1)
+        logger.info("Repo events for %s/%s", owner, name)
+
+        page = 1
+        while True:
+            logger.info("Repo events page %s for %s/%s", page, owner, name)
+            page_items = client.list_repository_events(owner, name, page=page)
+            if not page_items:
+                break
+            page_events = page_items
+
+            logger.info(
+                "Repo events page %s for %s/%s returned %s items",
+                page,
+                owner,
+                name,
+                len(page_items),
+            )
+            if page_events:
+                yield page_events
+            page += 1
+
+
+def fetch_repo_events(
+    minutes: int = 10, client: Optional[GitHubClient] = None
+) -> List[dict]:
+    events: List[dict] = []
+    for page_events in fetch_repo_events_pages(minutes=minutes, client=client):
+        events.extend(page_events)
+    return events
+
+
 def main() -> None:
     import argparse
 
@@ -282,3 +417,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+logger = logging.getLogger(__name__)

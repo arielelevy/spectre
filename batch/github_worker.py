@@ -12,7 +12,7 @@ if BASE_DIR not in sys.path:
 
 import redis
 
-from batch.services.github_service import fetch_public_events
+from batch.services.github_service import fetch_public_events, fetch_repo_events_pages
 from batch.github_clickhouse_writer import GitHubEvent, write_events
 from batch.services.redis_service import RedisService
 
@@ -98,10 +98,13 @@ def run_worker() -> None:
                             minutes = int(payload.get("window_minutes", 10))
 
                             logger.info(
-                                f"Fetching public events for last {minutes} minutes"
+                                f"Fetching public + repo events for last {minutes} minutes"
                             )
                             public_events = fetch_public_events(minutes=minutes)
-                            logger.info(f"Found {len(public_events)} events")
+                            logger.info(
+                                "Found %s public events",
+                                len(public_events),
+                            )
 
                             event_records = [
                                 GitHubEvent(
@@ -109,9 +112,30 @@ def run_worker() -> None:
                                 )
                                 for item in public_events
                             ]
-
                             count = write_events(event_records)
-                            logger.info(f"Persisted {count} events to ClickHouse")
+                            logger.info(
+                                "Persisted %s public events to ClickHouse",
+                                count,
+                            )
+
+                            repo_total = 0
+                            for page_events in fetch_repo_events_pages(minutes=minutes):
+                                repo_records = [
+                                    GitHubEvent(
+                                        event_type="github.repo_event", payload=item
+                                    )
+                                    for item in page_events
+                                ]
+                                page_count = write_events(repo_records)
+                                repo_total += page_count
+                                logger.info(
+                                    "Persisted %s repo events to ClickHouse (batch)",
+                                    page_count,
+                                )
+                            logger.info(
+                                "Persisted %s repo events to ClickHouse (total)",
+                                repo_total,
+                            )
 
                             client.xack(
                                 GITHUB_QUEUE_STREAM, GITHUB_QUEUE_GROUP, message_id

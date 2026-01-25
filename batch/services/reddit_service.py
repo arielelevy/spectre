@@ -50,6 +50,50 @@ class RedditClient:
             print(f"Error fetching subreddit data: {e}")
             return []
 
+    def fetch_post_comments(self, post_id: str):
+        """
+        Fetch comments for a specific post to map interactions.
+        Returns a list of interactions (User A -> User B).
+        """
+        try:
+            submission = self.reddit.submission(id=post_id)
+            submission.comments.replace_more(limit=0)  # Flatten tree, ignore 'load more'
+            
+            interactions = []
+            post_author = str(submission.author) if submission.author else "[deleted]"
+
+            for comment in submission.comments.list():
+                if not hasattr(comment, "author") or not comment.author:
+                    continue
+                
+                author = str(comment.author)
+                parent_author = None
+
+                if comment.is_root:
+                    # Top level comment -> replies to Post Author
+                    parent_author = post_author
+                else:
+                    # Reply -> replies to Parent Comment Author
+                    parent = comment.parent()
+                    if hasattr(parent, "author") and parent.author:
+                        parent_author = str(parent.author)
+                    else:
+                        parent_author = "[deleted]"
+
+                if parent_author and parent_author != "[deleted]":
+                    interactions.append({
+                        "post_id": post_id,
+                        "source_user": author,
+                        "target_user": parent_author,
+                        "type": "reply",
+                        "body_snippet": comment.body[:100]
+                    })
+            
+            return interactions
+        except Exception as e:
+            print(f"Error fetching comments for {post_id}: {e}")
+            return []
+
     def get_as_dataframe(self, subreddit_name: str = "osint", limit: int = 100):
         """
         Fetch data and return as a Pandas DataFrame.
