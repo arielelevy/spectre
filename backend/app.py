@@ -44,6 +44,26 @@ async def startup_event():
 
     logger.info("Startup complete. API is ready to accept requests.")
 
+@app.on_event("shutdown")
+async def shutdown_event():
+    logger.info("Shutting down Spectre Backend...")
+    
+    # Close Redis
+    try:
+        RedisService.get_instance().close()
+        logger.info("Redis connection closed")
+    except Exception as e:
+        logger.error(f"Error closing Redis: {e}")
+
+    # Close ClickHouse
+    try:
+        ClickHouseService.get_instance().close()
+        logger.info("ClickHouse connection closed")
+    except Exception as e:
+        logger.error(f"Error closing ClickHouse: {e}")
+    
+    logger.info("Shutdown complete.")
+
 
 class GitHubPublicIngestRequest(BaseModel):
     window_minutes: int = 10
