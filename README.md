@@ -1,30 +1,95 @@
-# Spectre Batch Processing
+# Spectre
 
-This component handles the ingestion of data from various sources (GitHub, Reddit, X) and its normalization into the Spectre data model in ClickHouse.
+MVP de investigacion forense de software usando datos publicos de GitHub para fusion, analitica y GenAI. El stack combina FastAPI, workers batch, Redis Streams y ClickHouse para modelar eventos y grafo.
 
-## Components
+## Componentes
 
-- `main.py`: Entry point for the batch workers.
-- `github_worker.py`: Worker for ingesting GitHub public events and repository data.
-- `reddit_worker.py`: Worker for ingesting Reddit posts from specific subreddits.
-- `x_worker.py`: Worker for ingesting X (Twitter) tweets.
-- `services/`: Client services for interacting with external APIs and internal databases (Redis, ClickHouse).
-- `clickhouse_writer.py`: Handles the persistence and normalization of events into ClickHouse.
+- Backend (FastAPI): API de busqueda, grafo y KPIs.
+- Batch (Python): ingesta publica de GitHub y normalizacion a eventos/grafo.
+- Redis: cola (Streams) y cache.
+- ClickHouse: eventos, nodos y aristas del grafo.
+- Frontend (React/Vite): dashboard y visualizacion.
 
-## Architecture
+## Estructura del repo
 
-The batch system uses Redis Streams as a task queue. Workers listen to specific streams, fetch data from external sources, normalize it into `nodes`, `edges`, and `events`, and then persist it to ClickHouse.
+- `backend/`: API FastAPI.
+- `batch/`: worker de ingesta GitHub y escritor ClickHouse.
+- `shared/`: servicios compartidos (Redis, ClickHouse, logging).
+- `frontend/`: UI React.
+- `deploy/docker/`: compose y Dockerfiles por servicio.
+- `PLAN.md`: arquitectura y modelo de datos.
+- `DEPLOY_PLAN.md`: despliegue en Azure.
 
-## Local Development
+## Quick start (Docker)
 
-To run a worker locally:
+1) Levanta Redis y ClickHouse
 
 ```bash
-# GitHub Worker
-python -m batch.main --source github
-
-# Reddit Worker
-python -m batch.main --source reddit
+docker compose -f deploy/docker/redis/docker-compose.yml up -d
+docker compose -f deploy/docker/clickhouse/docker-compose.yml up -d
 ```
 
-Make sure to have a `.env` file in the root directory with the necessary API tokens.
+2) Levanta backend y batch
+
+```bash
+docker compose -f deploy/docker/backend/docker-compose.yml --env-file .env up -d
+docker compose -f deploy/docker/batch/docker-compose.yml --env-file .env up -d
+```
+
+3) Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+## Desarrollo local (sin Docker)
+
+Backend:
+
+```bash
+python -m backend.main
+```
+
+Batch:
+
+```bash
+python -m batch.main
+```
+
+Frontend:
+
+```bash
+cd frontend
+npm run dev
+```
+
+## Endpoints utiles
+
+- `GET /health`
+- `POST /ingest/github/public` (body: `{ "window_minutes": 10 }`)
+- `GET /graph/search?q=<texto>`
+- `GET /graph/neighbors?node_id=<id>`
+- `GET /dashboard/kpis`
+
+## Variables de entorno (sin valores)
+
+- `REDIS_URL`
+- `WORKER_CONCURRENCY`
+- `CLICKHOUSE_HOST`
+- `CLICKHOUSE_PORT`
+- `CLICKHOUSE_USER`
+- `CLICKHOUSE_PASSWORD`
+- `CLICKHOUSE_DATABASE`
+- `CLICKHOUSE_TIMEOUT_SECONDS`
+- `GITHUB_TOKEN`
+
+## Troubleshooting
+
+- Si corres backend/batch en tu host (Windows/macOS/Linux), usa:
+  `REDIS_URL=redis://localhost:6379/0`
+- Si corres dentro de Docker, usa el nombre del servicio:
+  `REDIS_URL=redis://spectre-redis:6379/0`
+- ClickHouse 404 suele indicar `CLICKHOUSE_HOST` o credenciales incorrectas.
+- El batch no debe auto-agendar jobs; solo procesa lo que el backend encola.
