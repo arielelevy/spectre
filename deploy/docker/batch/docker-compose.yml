@@ -1,0 +1,30 @@
+version: "3.9"
+
+services:
+  batch:
+    container_name: spectre-batch
+    build:
+      context: ../../..
+      dockerfile: deploy/docker/batch/Dockerfile.batch
+    env_file:
+      - ../../../.env
+    environment:
+      REDIS_URL: ${REDIS_URL}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY}
+      CLICKHOUSE_HOST: ${CLICKHOUSE_HOST}
+      CLICKHOUSE_PORT: ${CLICKHOUSE_PORT}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE}
+      CLICKHOUSE_TIMEOUT_SECONDS: ${CLICKHOUSE_TIMEOUT_SECONDS}
+    networks:
+      - redis
+      - clickhouse
+
+networks:
+  redis:
+    external: true
+    name: redis_default
+  clickhouse:
+    external: true
+    name: clickhouse_default

@@ -1,0 +1,7 @@
+{
+  "name": "Spectre",
+  "description": "A high-security threat intelligence and overwatch dashboard featuring the Spectre branding and real-time anomaly detection.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}

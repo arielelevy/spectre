@@ -1,0 +1,15 @@
+FROM python:3.13-slim
+
+WORKDIR /app
+
+# Instalar dependencias
+COPY backend/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+# Copiar codigo fuente
+COPY shared /app/shared
+COPY batch /app/batch
+
+ENV PYTHONPATH=/app
+
+CMD ["python", "-m", "batch.main"]
