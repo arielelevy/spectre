@@ -94,6 +94,7 @@ export default function SentinelInterface() {
   const panStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const graphContainerRef = useRef<HTMLDivElement | null>(null);
   const graphFullscreenRef = useRef<HTMLDivElement | null>(null);
+  const graphZoomRef = useRef(1);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
   const defaultGraphSeed = 'api';
@@ -150,43 +151,30 @@ export default function SentinelInterface() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [apiBaseUrl]);
 
-  useEffect(() => {
-    const wheelHandler = (event: WheelEvent) => {
-      event.preventDefault();
-      const target = event.currentTarget as HTMLElement | null;
-      if (!target) return;
-      const rect = target.getBoundingClientRect();
-      if (!rect.width || !rect.height) return;
+  const handleGraphWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    const target = event.currentTarget as HTMLElement | null;
+    if (!target) return;
+    const rect = target.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
 
-      const mouseX = event.clientX - rect.left;
-      const mouseY = event.clientY - rect.top;
-      const viewSize = 360;
-      const svgX = (mouseX / rect.width) * viewSize - viewSize / 2;
-      const svgY = (mouseY / rect.height) * viewSize - viewSize / 2;
+    const mouseX = event.clientX - rect.left;
+    const mouseY = event.clientY - rect.top;
+    const viewSize = 360;
+    const svgX = (mouseX / rect.width) * viewSize - viewSize / 2;
+    const svgY = (mouseY / rect.height) * viewSize - viewSize / 2;
 
-      const zoomFactor = event.deltaY < 0 ? 1.2 : 1 / 1.2;
-      const nextZoom = Math.min(3, Math.max(0.6, graphZoom * zoomFactor));
-      if (nextZoom === graphZoom) return;
+    const prevZoom = graphZoomRef.current;
+    const zoomFactor = event.deltaY < 0 ? 1.2 : 1 / 1.2;
+    const nextZoom = Math.min(3, Math.max(0.6, prevZoom * zoomFactor));
+    if (nextZoom === prevZoom) return;
 
-      setGraphPan((prev) => {
-        const nextX = ((svgX + prev.x) * graphZoom) / nextZoom - svgX;
-        const nextY = ((svgY + prev.y) * graphZoom) / nextZoom - svgY;
-        return { x: nextX, y: nextY };
-      });
-      setGraphZoom(nextZoom);
-    };
-
-    const containers = [graphContainerRef.current, graphFullscreenRef.current].filter(Boolean);
-    containers.forEach((container) => {
-      (container as HTMLDivElement).addEventListener('wheel', wheelHandler, { passive: false });
+    setGraphPan((prev) => {
+      const nextX = ((svgX + prev.x) * prevZoom) / nextZoom - svgX;
+      const nextY = ((svgY + prev.y) * prevZoom) / nextZoom - svgY;
+      return { x: nextX, y: nextY };
     });
-
-    return () => {
-      containers.forEach((container) => {
-        (container as HTMLDivElement).removeEventListener('wheel', wheelHandler);
-      });
-    };
-  }, [graphZoom]);
+    setGraphZoom(nextZoom);
+  };
 
   const handleSendMessage = async () => {
     if (!chatInput.trim()) return;
@@ -287,6 +275,10 @@ export default function SentinelInterface() {
     setGraphZoom(1);
     setGraphPan({ x: 0, y: 0 });
   };
+
+  useEffect(() => {
+    graphZoomRef.current = graphZoom;
+  }, [graphZoom]);
 
   const buildGraphLayout = (data: GraphData | null, focusId: string) => {
     if (!data || data.nodes.length === 0) return { nodes: [], edges: [] };
@@ -552,15 +544,6 @@ export default function SentinelInterface() {
         </g>
       </svg>
     );
-  };
-
-  const handleGraphWheel = (event: React.WheelEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    if (event.deltaY < 0) {
-      zoomIn();
-    } else {
-      zoomOut();
-    }
   };
 
   const handleGraphPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -852,6 +835,7 @@ export default function SentinelInterface() {
               <div
                 ref={graphContainerRef}
                 className="flex-1 bg-black/30 border border-white/5 rounded-sm relative overflow-hidden"
+                onWheel={handleGraphWheel}
                 onPointerDown={handleGraphPointerDown}
                 onPointerMove={handleGraphPointerMove}
                 onPointerUp={handleGraphPointerUp}
@@ -961,6 +945,7 @@ export default function SentinelInterface() {
           <div
             ref={graphFullscreenRef}
             className="flex-1 relative overflow-hidden"
+            onWheel={handleGraphWheel}
             onPointerDown={handleGraphPointerDown}
             onPointerMove={handleGraphPointerMove}
             onPointerUp={handleGraphPointerUp}
