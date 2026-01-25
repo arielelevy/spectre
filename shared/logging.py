@@ -8,8 +8,10 @@ import redis
 # Configuration
 LOG_REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 LOG_QUEUE_KEY = os.getenv("LOG_QUEUE_KEY", "log:queue")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 SERVICE_NAME = os.getenv("SERVICE_NAME", "unknown")
 HOSTNAME = socket.gethostname()
+
 
 class RedisHandler(logging.Handler):
     def __init__(self, redis_url: str, list_key: str):
@@ -27,33 +29,52 @@ class RedisHandler(logging.Handler):
                 "module": record.module,
                 "message": record.getMessage(),
                 "path": record.pathname,
-                "line": record.lineno
+                "line": record.lineno,
             }
             if record.exc_info:
                 log_entry["exception"] = self.format(record)
-            
+
             self.redis_client.rpush(self.list_key, json.dumps(log_entry))
         except Exception:
             self.handleError(record)
 
-def configure_logging(service_name: str, level=logging.INFO):
+
+def _resolve_level(level: int | str | None) -> int:
+    if level is None:
+        return logging.getLevelName(LOG_LEVEL)
+    if isinstance(level, int):
+        return level
+    return logging.getLevelName(str(level).upper())
+
+
+def configure_logging(service_name: str, level: int | str | None = None):
     global SERVICE_NAME
     SERVICE_NAME = service_name
-    
+
     root_logger = logging.getLogger()
-    root_logger.setLevel(level)
-    
+    resolved_level = _resolve_level(level)
+    root_logger.setLevel(resolved_level)
+
     # Console Handler (Fallback/Dev)
     console_handler = logging.StreamHandler()
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
     console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
-    
+
     # Redis Handler
     try:
         redis_handler = RedisHandler(LOG_REDIS_URL, LOG_QUEUE_KEY)
         root_logger.addHandler(redis_handler)
     except Exception as e:
         print(f"Failed to initialize Redis logging: {e}")
+
+    handlers = list(root_logger.handlers)
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        uv_logger = logging.getLogger(name)
+        uv_logger.handlers = handlers
+        uv_logger.setLevel(resolved_level)
+        uv_logger.propagate = False
 
     logging.info(f"Logging initialized for {service_name}")

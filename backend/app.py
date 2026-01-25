@@ -20,6 +20,30 @@ GITHUB_QUEUE_STREAM = os.getenv("GITHUB_INGEST_QUEUE", "job:queue")
 
 app = FastAPI(title="Spectre Backend")
 
+@app.on_event("startup")
+async def startup_event():
+    logger.info("Initializing Spectre Backend...")
+    
+    # Check Redis
+    try:
+        redis_client = RedisService.get_instance().client
+        info = redis_client.info()
+        logger.info(f"Redis connected: {info['redis_version']}")
+    except Exception as e:
+        logger.error(f"Failed to connect to Redis: {e}")
+
+    # Check ClickHouse
+    try:
+        ch_service = ClickHouseService.get_instance()
+        if ch_service.ping():
+            logger.info("ClickHouse connected and responding to ping")
+        else:
+            logger.warning("ClickHouse ping failed")
+    except Exception as e:
+        logger.error(f"Failed to connect to ClickHouse: {e}")
+
+    logger.info("Startup complete. API is ready to accept requests.")
+
 
 class GitHubPublicIngestRequest(BaseModel):
     window_minutes: int = 10
