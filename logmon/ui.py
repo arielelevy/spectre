@@ -318,7 +318,7 @@ class LogDisplay:
         main_table.add_column("Search", justify="right", ratio=1, min_width=25)
         main_table.add_row(left_table, search_display)
 
-        return Panel(main_table, title="[bold]Lumen Log Monitor[/]", border_style="blue")
+        return Panel(main_table, title="[bold]Spectre Monitor[/]", border_style="blue")
 
     def render_logs(self, height: int = 30, width: int = 120) -> Panel:
         """Render the main log panel.

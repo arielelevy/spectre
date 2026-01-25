@@ -99,7 +99,7 @@ Requirements:
 
     # Show startup info
     print("=" * 50)
-    print("  Lumen Log Monitor (Redis pub/sub)")
+    print("  Spectre Monitor (Redis pub/sub)")
     print("=" * 50)
     print(f"  Redis: {args.redis_url}")
     print(f"  Channels: {', '.join(f'logs:{s.name}' for s in sources)}")
