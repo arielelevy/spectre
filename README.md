@@ -1,6 +1,12 @@
-# Spectre
+# Spectre 🛡️
+> **Forensic Software Intelligence Platform**
 
-MVP de investigacion forense de software usando datos publicos de GitHub para fusion, analitica y GenAI. El stack combina FastAPI, workers batch, Redis Streams y ClickHouse para modelar eventos y grafo.
+Spectre is a high-performance MVP designed to correlate public software development activity into actionable knowledge graphs. 
+
+**Core Capabilities:**
+- **Fusion:** Real-time ingestion of GitHub (and upcoming Reddit) public event streams.
+- **Analytics:** Sub-second OLAP queries over millions of event rows.
+- **GenAI:** Agentic reasoning over graph nodes to detect patterns, anomalies, and forensic insights.
 
 ## Componentes
 
