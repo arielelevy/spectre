@@ -143,18 +143,18 @@ Entorno actual para iteración rápida:
 
 ## Roadmap de Implementación (MVP)
 
-### Fase 1: Fundamentos (En Progreso)
+### Fase 1: Fundamentos (Completado)
 - [x] Definición de Esquema ClickHouse (`nodes`, `edges`, `events`).
 - [x] Lógica de Ingesta Segura (Raw + Graph Extraction).
 - [x] API Básica (Search, Neighbors, KPIs).
-- [ ] Configuración `docker-compose` local.
+- [x] Configuración `docker-compose` local.
 
-### Fase 2: Conexión de Datos
-- [ ] Worker funcional ingiriendo de API pública de GitHub.
-- [ ] Visualización de Grafo en Frontend conectada a API.
-- [ ] Dashboard de KPIs con datos reales.
+### Fase 2: Conexión de Datos (Completado)
+- [x] Worker funcional ingiriendo de API pública de GitHub.
+- [x] Visualización de Grafo en Frontend conectada a API.
+- [x] Dashboard de KPIs con datos reales.
 
-### Fase 3: Inteligencia
+### Fase 3: Inteligencia (En Progreso)
 - [ ] Implementación de GraphRAG (Búsqueda semántica + relaciones).
 - [ ] Agentes de Chatbot Forense.
 
