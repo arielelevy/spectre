@@ -43,27 +43,44 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
-    logger.info("Initializing Spectre Backend...")
+    logger.info("")
+    logger.info(
+        "======================================================================"
+    )
+    logger.info("🚀 Starting Spectre Backend")
+    logger.info(
+        "======================================================================"
+    )
+    logger.info("[STARTUP] Initializing services...")
 
     # Check Redis
+    logger.info("- Redis: connecting...")
     try:
         redis_client = RedisService.get_instance().client
         info = redis_client.info()
-        logger.info(f"Redis connected: {info['redis_version']}")
+        logger.info("- Redis: ✅ [OK] version=%s", info.get("redis_version", "unknown"))
     except Exception as e:
-        logger.error(f"Failed to connect to Redis: {e}")
+        logger.error("- Redis: ❗ [ERR] %s", e)
+        raise RuntimeError("Redis is required for backend startup") from e
 
     # Check ClickHouse
+    logger.info("- ClickHouse: connecting...")
     try:
         ch_service = ClickHouseService.get_instance()
         if ch_service.ping():
-            logger.info("ClickHouse connected and responding to ping")
+            logger.info("- ClickHouse: ✅ [OK] ping")
         else:
-            logger.warning("ClickHouse ping failed")
+            logger.warning("- ClickHouse: ⚠️ [WARN] ping failed")
     except Exception as e:
-        logger.error(f"Failed to connect to ClickHouse: {e}")
+        logger.error("- ClickHouse: ❗ [ERR] %s", e)
 
-    logger.info("Startup complete. API is ready to accept requests.")
+    logger.info(
+        "======================================================================"
+    )
+    logger.info("✅ Application setup completed")
+    logger.info(
+        "======================================================================"
+    )
 
     if AUTO_INGEST_ENABLED:
         logger.info(

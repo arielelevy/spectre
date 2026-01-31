@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
+import * as d3 from 'd3';
 import {
   LayoutDashboard,
   FileText,
@@ -63,6 +64,12 @@ type GraphData = {
   edges: GraphEdge[];
 };
 
+type GraphLayoutNode = GraphNode & {
+  x: number;
+  y: number;
+  isCenter: boolean;
+};
+
 export default function SentinelInterface() {
   const [view, setView] = useState<View>('DASHBOARD');
   const [selectedThreat, setSelectedThreat] = useState<Threat | null>(null);
@@ -79,6 +86,7 @@ export default function SentinelInterface() {
     risk_score: 0,
   });
   const [graphData, setGraphData] = useState<GraphData | null>(null);
+  const [graphLayout, setGraphLayout] = useState<{ nodes: GraphLayoutNode[]; edges: GraphEdge[]; size: number } | null>(null);
   const [graphFocus, setGraphFocus] = useState<string>('');
   const [graphLoading, setGraphLoading] = useState(false);
   const [graphError, setGraphError] = useState('');
@@ -94,6 +102,8 @@ export default function SentinelInterface() {
   const panStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const graphContainerRef = useRef<HTMLDivElement | null>(null);
   const graphFullscreenRef = useRef<HTMLDivElement | null>(null);
+  const graphCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const graphFullscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const graphZoomRef = useRef(1);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
@@ -280,8 +290,128 @@ export default function SentinelInterface() {
     graphZoomRef.current = graphZoom;
   }, [graphZoom]);
 
+  const getVisibleEdges = (edges: GraphEdge[]) => {
+    const sortedEdges = [...edges].sort((a, b) => (b.weight || 1) - (a.weight || 1));
+    const edgeLimit = graphZoom < 1.1 ? 200 : graphZoom < 1.6 ? 500 : sortedEdges.length;
+    return sortedEdges.slice(0, edgeLimit);
+  };
+
+  const getVisibleNodeIds = (edges: GraphEdge[], focusId: string) => {
+    const visibleNodeIds = new Set<string>();
+    if (graphZoom < 1.1) {
+      edges.forEach((edge) => {
+        visibleNodeIds.add(edge.src);
+        visibleNodeIds.add(edge.dst);
+      });
+      if (focusId) {
+        visibleNodeIds.add(focusId);
+      }
+    }
+    return visibleNodeIds;
+  };
+
+  const drawGraph = (
+    canvas: HTMLCanvasElement | null,
+    container: HTMLDivElement | null,
+    layout: { nodes: GraphLayoutNode[]; edges: GraphEdge[] } | null,
+    focusId: string,
+    hoveredNode: GraphNode | null,
+    hoveredEdge: GraphEdge | null
+  ) => {
+    if (!canvas || !container || !layout) return;
+
+    const rect = container.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const width = Math.max(1, Math.floor(rect.width));
+    const height = Math.max(1, Math.floor(rect.height));
+
+    if (canvas.width !== width * dpr || canvas.height !== height * dpr) {
+      canvas.width = width * dpr;
+      canvas.height = height * dpr;
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+    }
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+
+    const viewSize = 360;
+    const scale = Math.min(width, height) / viewSize;
+
+    ctx.save();
+    ctx.translate(width / 2, height / 2);
+    ctx.scale(scale, scale);
+    ctx.translate(graphPan.x, graphPan.y);
+    ctx.scale(graphZoom, graphZoom);
+
+    const weights = layout.edges.map((edge) => edge.weight || 1);
+    const minWeight = Math.min(...weights, 1);
+    const maxWeight = Math.max(...weights, 1);
+    const normalizeWeight = (value: number) => {
+      if (maxWeight === minWeight) return 0.6;
+      return 0.2 + ((value - minWeight) / (maxWeight - minWeight)) * 0.8;
+    };
+
+    const visibleEdges = getVisibleEdges(layout.edges);
+    const visibleNodeIds = getVisibleNodeIds(visibleEdges, focusId);
+    const nodeMap = new Map(layout.nodes.map((node) => [node.id, node]));
+
+    visibleEdges.forEach((edge) => {
+      const src = nodeMap.get(edge.src);
+      const dst = nodeMap.get(edge.dst);
+      if (!src || !dst) return;
+      const intensity = normalizeWeight(edge.weight || 1);
+      const isHovered = hoveredEdge && hoveredEdge.src === edge.src && hoveredEdge.dst === edge.dst;
+      ctx.strokeStyle = isHovered
+        ? `rgba(16,185,129,${Math.min(1, intensity + 0.3)})`
+        : `rgba(14,116,144,${intensity.toFixed(2)})`;
+      ctx.lineWidth = (0.6 + intensity * 1.4) * (isHovered ? 1.6 : 1);
+      ctx.beginPath();
+      ctx.moveTo(src.x, src.y);
+      ctx.lineTo(dst.x, dst.y);
+      ctx.stroke();
+    });
+
+    layout.nodes
+      .filter((node) => (graphZoom < 1.1 ? visibleNodeIds.has(node.id) : true))
+      .forEach((node) => {
+        const isHovered = hoveredNode && hoveredNode.id === node.id;
+        const radius = node.isCenter ? 16 : 10;
+        ctx.fillStyle = node.isCenter ? '#22d3ee' : '#0ea5e9';
+        ctx.globalAlpha = node.isCenter ? 0.9 : 0.6;
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, isHovered ? radius + 2 : radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+
+        if (node.isCenter) {
+          const gradient = ctx.createRadialGradient(node.x, node.y, 4, node.x, node.y, 28);
+          gradient.addColorStop(0, 'rgba(34,211,238,0.45)');
+          gradient.addColorStop(1, 'rgba(14,165,233,0)');
+          ctx.fillStyle = gradient;
+          ctx.beginPath();
+          ctx.arc(node.x, node.y, 28, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        ctx.fillStyle = 'rgba(226,232,240,0.7)';
+        ctx.font = '8px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        const label = node.id.length > 18 ? `${node.id.slice(0, 18)}…` : node.id;
+        ctx.fillText(label, node.x, node.y + (node.isCenter ? 26 : 20));
+      });
+
+    ctx.restore();
+  };
+
   const buildGraphLayout = (data: GraphData | null, focusId: string) => {
-    if (!data || data.nodes.length === 0) return { nodes: [], edges: [] };
+    if (!data || data.nodes.length === 0) return { nodes: [], edges: [], size: 360 };
     const size = 360;
     const radius = 80;
     const centerNode = data.nodes.find((node) => node.id === focusId) || data.nodes[0];
@@ -327,7 +457,7 @@ export default function SentinelInterface() {
         levelGroups.get(level)!.push(node);
       });
 
-      const nodes = [] as Array<GraphNode & { x: number; y: number; isCenter: boolean }>;
+      const nodes = [] as GraphLayoutNode[];
       nodes.push({ ...centerNode, x: 0, y: 0, isCenter: true });
 
       const levelLimit = graphZoom < 1 ? 8 : graphZoom < 1.6 ? 14 : 22;
@@ -401,9 +531,9 @@ export default function SentinelInterface() {
       levelGroups.get(level)!.push(node);
     });
 
-    const nodes = [] as Array<GraphNode & { x: number; y: number; isCenter: boolean }>;
-    const seedNode = data.nodes.find((node) => node.id === seedId) || centerNode;
-    nodes.push({ ...seedNode, x: 0, y: 0, isCenter: true });
+      const nodes = [] as GraphLayoutNode[];
+      const seedNode = data.nodes.find((node) => node.id === seedId) || centerNode;
+      nodes.push({ ...seedNode, x: 0, y: 0, isCenter: true });
 
     const levelLimit = graphZoom < 0.9 ? 8 : graphZoom < 1.3 ? 12 : 18;
 
@@ -428,6 +558,80 @@ export default function SentinelInterface() {
     return { nodes, edges, size };
   };
 
+  useEffect(() => {
+    if (!graphData) {
+      setGraphLayout(null);
+      return;
+    }
+    const layout = buildGraphLayout(graphData, graphFocus);
+    if (!layout.nodes.length) {
+      setGraphLayout({ nodes: [], edges: [], size: 360 });
+      return;
+    }
+
+    const nodes = layout.nodes.map((node) => ({ ...node }));
+    const links = layout.edges.map((edge) => ({ ...edge, source: edge.src, target: edge.dst }));
+    const linkForce = d3
+      .forceLink(links)
+      .id((node) => (node as GraphLayoutNode).id)
+      .distance((link) => {
+        const weight = (link as GraphEdge).weight || 1;
+        return Math.max(24, 120 - weight * 6);
+      })
+      .strength(0.6);
+
+    const simulation = d3
+      .forceSimulation(nodes as d3.SimulationNodeDatum[])
+      .force('link', linkForce)
+      .force('charge', d3.forceManyBody().strength(graphMode === 'focus' ? -140 : -90))
+      .force('center', d3.forceCenter(0, 0))
+      .force(
+        'collide',
+        d3.forceCollide().radius((node) => ((node as GraphLayoutNode).isCenter ? 22 : 14))
+      )
+      .alpha(0.9)
+      .alphaDecay(0.07);
+
+    for (let i = 0; i < 70; i += 1) {
+      simulation.tick();
+    }
+    simulation.stop();
+
+    setGraphLayout({
+      nodes: nodes.map((node) => ({
+        ...(node as GraphLayoutNode),
+        x: Number.isFinite((node as GraphLayoutNode).x) ? (node as GraphLayoutNode).x : 0,
+        y: Number.isFinite((node as GraphLayoutNode).y) ? (node as GraphLayoutNode).y : 0,
+      })),
+      edges: layout.edges,
+      size: layout.size,
+    });
+  }, [graphData, graphFocus, graphMode, graphZoom]);
+
+  useEffect(() => {
+    if (!graphLayout || graphLoading) return;
+    drawGraph(graphCanvasRef.current, graphContainerRef.current, graphLayout, graphFocus, hoverNode, hoverEdge);
+    if (graphFullscreen) {
+      drawGraph(
+        graphFullscreenCanvasRef.current,
+        graphFullscreenRef.current,
+        graphLayout,
+        graphFocus,
+        hoverNode,
+        hoverEdge
+      );
+    }
+  }, [
+    graphLayout,
+    graphFocus,
+    graphZoom,
+    graphPan,
+    graphLoading,
+    graphFullscreen,
+    hoverNode,
+    hoverEdge,
+  ]);
+
   const renderGraphCanvas = () => {
     if (graphLoading) {
       return (
@@ -446,103 +650,15 @@ export default function SentinelInterface() {
       );
     }
 
-    const layout = buildGraphLayout(graphData, graphFocus);
-    const weights = layout.edges.map((edge) => edge.weight || 1);
-    const minWeight = Math.min(...weights, 1);
-    const maxWeight = Math.max(...weights, 1);
-    const normalizeWeight = (value: number) => {
-      if (maxWeight === minWeight) return 0.6;
-      return 0.2 + ((value - minWeight) / (maxWeight - minWeight)) * 0.8;
-    };
-    const sortedEdges = [...layout.edges].sort((a, b) => (b.weight || 1) - (a.weight || 1));
-    const edgeLimit = graphZoom < 1.1 ? 200 : graphZoom < 1.6 ? 500 : sortedEdges.length;
-    const visibleEdges = sortedEdges.slice(0, edgeLimit);
-    const visibleNodeIds = new Set<string>();
-    if (graphZoom < 1.1) {
-      visibleEdges.forEach((edge) => {
-        visibleNodeIds.add(edge.src);
-        visibleNodeIds.add(edge.dst);
-      });
-      if (graphFocus) {
-        visibleNodeIds.add(graphFocus);
-      }
+    if (!graphLayout) {
+      return (
+        <div className="absolute inset-0 flex items-center justify-center text-[9px] font-mono text-cyan-700">
+          LAYOUTING_GRAPH...
+        </div>
+      );
     }
     return (
-      <svg
-        viewBox="-180 -180 360 360"
-        className="w-full h-full"
-      >
-        <defs>
-          <radialGradient id="nodeGlow" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.6" />
-            <stop offset="100%" stopColor="#0ea5e9" stopOpacity="0" />
-          </radialGradient>
-        </defs>
-        <g transform={`translate(${graphPan.x} ${graphPan.y}) scale(${graphZoom})`}>
-          {visibleEdges.map((edge) => {
-            const src = layout.nodes.find((node) => node.id === edge.src);
-            const dst = layout.nodes.find((node) => node.id === edge.dst);
-            if (!src || !dst) return null;
-            const intensity = normalizeWeight(edge.weight || 1);
-            return (
-              <line
-                key={`${edge.src}-${edge.dst}`}
-                x1={src.x}
-                y1={src.y}
-                x2={dst.x}
-                y2={dst.y}
-                stroke={`rgba(14,116,144,${intensity.toFixed(2)})`}
-                strokeWidth={0.6 + intensity * 1.4}
-                onPointerDown={(event) => event.stopPropagation()}
-                onMouseEnter={() => {
-                  setHoverEdge(edge);
-                  setHoverNode(null);
-                }}
-                onMouseLeave={() => setHoverEdge(null)}
-              />
-            );
-          })}
-          {layout.nodes
-            .filter((node) => (graphZoom < 1.1 ? visibleNodeIds.has(node.id) : true))
-            .map((node) => (
-            <g
-              key={node.id}
-              onClick={() => handleFocusNode(node.id)}
-              onPointerDown={(event) => event.stopPropagation()}
-              onMouseEnter={() => {
-                setHoverNode(node);
-                setHoverEdge(null);
-              }}
-              onMouseLeave={() => setHoverNode(null)}
-            >
-              <circle
-                cx={node.x}
-                cy={node.y}
-                r={node.isCenter ? 16 : 10}
-                fill={node.isCenter ? '#22d3ee' : '#0ea5e9'}
-                opacity={node.isCenter ? 0.9 : 0.6}
-              />
-              {node.isCenter && (
-                <circle
-                  cx={node.x}
-                  cy={node.y}
-                  r="28"
-                  fill="url(#nodeGlow)"
-                />
-              )}
-              <text
-                x={node.x}
-                y={node.y + (node.isCenter ? 26 : 20)}
-                textAnchor="middle"
-                fontSize="8"
-                fill="rgba(226,232,240,0.7)"
-              >
-                {node.id.length > 18 ? `${node.id.slice(0, 18)}…` : node.id}
-              </text>
-            </g>
-          ))}
-        </g>
-      </svg>
+      <canvas ref={graphCanvasRef} className="absolute inset-0 w-full h-full" />
     );
   };
 
@@ -568,6 +684,69 @@ export default function SentinelInterface() {
   const handleGraphMouseMove = (event: React.MouseEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     setHoverPos({ x: event.clientX - rect.left, y: event.clientY - rect.top });
+
+    if (!graphLayout) {
+      setHoverNode(null);
+      setHoverEdge(null);
+      return;
+    }
+
+    const width = rect.width;
+    const height = rect.height;
+    if (!width || !height) return;
+
+    const viewSize = 360;
+    const scale = Math.min(width, height) / viewSize;
+    const localX = (event.clientX - rect.left - width / 2) / scale;
+    const localY = (event.clientY - rect.top - height / 2) / scale;
+    const graphX = localX / graphZoom - graphPan.x;
+    const graphY = localY / graphZoom - graphPan.y;
+
+    const visibleEdges = getVisibleEdges(graphLayout.edges);
+    const visibleNodeIds = getVisibleNodeIds(visibleEdges, graphFocus);
+    const nodes = graphLayout.nodes.filter((node) => (graphZoom < 1.1 ? visibleNodeIds.has(node.id) : true));
+
+    let nearestNode: GraphLayoutNode | null = null;
+    let nearestDistance = Infinity;
+    nodes.forEach((node) => {
+      const radius = node.isCenter ? 16 : 10;
+      const dx = graphX - node.x;
+      const dy = graphY - node.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < radius + 6 && dist < nearestDistance) {
+        nearestDistance = dist;
+        nearestNode = node;
+      }
+    });
+
+    if (nearestNode) {
+      setHoverNode(nearestNode);
+      setHoverEdge(null);
+      return;
+    }
+
+    let nearestEdge: GraphEdge | null = null;
+    let edgeDistance = Infinity;
+    const nodeMap = new Map(graphLayout.nodes.map((node) => [node.id, node]));
+    visibleEdges.forEach((edge) => {
+      const src = nodeMap.get(edge.src);
+      const dst = nodeMap.get(edge.dst);
+      if (!src || !dst) return;
+      const dx = dst.x - src.x;
+      const dy = dst.y - src.y;
+      const lengthSq = dx * dx + dy * dy || 1;
+      const t = Math.max(0, Math.min(1, ((graphX - src.x) * dx + (graphY - src.y) * dy) / lengthSq));
+      const projX = src.x + t * dx;
+      const projY = src.y + t * dy;
+      const dist = Math.hypot(graphX - projX, graphY - projY);
+      if (dist < 6 && dist < edgeDistance) {
+        edgeDistance = dist;
+        nearestEdge = edge;
+      }
+    });
+
+    setHoverNode(null);
+    setHoverEdge(nearestEdge);
   };
 
   useEffect(() => {
@@ -840,6 +1019,10 @@ export default function SentinelInterface() {
                 onPointerMove={handleGraphPointerMove}
                 onPointerUp={handleGraphPointerUp}
                 onMouseMove={handleGraphMouseMove}
+                onMouseLeave={() => {
+                  setHoverNode(null);
+                  setHoverEdge(null);
+                }}
               >
                 {renderGraphCanvas()}
                 {hoverNode && (
@@ -950,8 +1133,28 @@ export default function SentinelInterface() {
             onPointerMove={handleGraphPointerMove}
             onPointerUp={handleGraphPointerUp}
             onMouseMove={handleGraphMouseMove}
+            onMouseLeave={() => {
+              setHoverNode(null);
+              setHoverEdge(null);
+            }}
           >
-            {renderGraphCanvas()}
+            <canvas ref={graphFullscreenCanvasRef} className="absolute inset-0 w-full h-full" />
+            {graphLoading && (
+              <div className="absolute inset-0 flex items-center justify-center text-[10px] font-mono text-cyan-700">
+                LOADING_GRAPH...
+              </div>
+            )}
+            {!graphLoading && !graphData && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-[10px] font-mono text-slate-700 gap-2">
+                <Globe className="h-12 w-12 text-cyan-900/60" />
+                <span>GRAPH SEEDING...</span>
+              </div>
+            )}
+            {!graphLoading && graphData && !graphLayout && (
+              <div className="absolute inset-0 flex items-center justify-center text-[10px] font-mono text-cyan-700">
+                LAYOUTING_GRAPH...
+              </div>
+            )}
             {hoverNode && (
               <div
                 className="absolute pointer-events-none bg-black/80 border border-cyan-500/20 text-[10px] font-mono text-slate-200 px-3 py-2"

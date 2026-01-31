@@ -1,4 +1,5 @@
 """Main monitor class that coordinates Redis subscription and display."""
+
 import time
 import sys
 import subprocess
@@ -30,8 +31,7 @@ class LogMonitor:
         self.config = config
         self.console = Console()
         self.display = LogDisplay(
-            max_lines=config.max_lines,
-            sources={s.name: s for s in config.sources}
+            max_lines=config.max_lines, sources={s.name: s for s in config.sources}
         )
         self.subscriber: RedisLogSubscriber = None
         self.running = False
@@ -43,16 +43,16 @@ class LogMonitor:
         """Try to connect to Redis. Returns True if successful."""
         try:
             parsed = urlparse(self.config.redis_url)
-            host = parsed.hostname or 'localhost'
-            if host == 'localhost':
-                host = '127.0.0.1'
+            host = parsed.hostname or "localhost"
+            if host == "localhost":
+                host = "127.0.0.1"
             client = redis.Redis(
                 host=host,
                 port=parsed.port or 6379,
-                db=int(parsed.path.lstrip('/') or 0),
+                db=int(parsed.path.lstrip("/") or 0),
                 decode_responses=True,
                 protocol=2,
-                socket_timeout=3
+                socket_timeout=3,
             )
             client.ping()
             return True
@@ -81,10 +81,19 @@ class LogMonitor:
         try:
             # Start port-forward
             self._port_forward_proc = subprocess.Popen(
-                ["kubectl", "port-forward", f"svc/{pf.service}", f"{pf.port}:{pf.port}", "-n", pf.namespace],
+                [
+                    "kubectl",
+                    "port-forward",
+                    f"svc/{pf.service}",
+                    f"{pf.port}:{pf.port}",
+                    "-n",
+                    pf.namespace,
+                ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                creationflags=subprocess.CREATE_NO_WINDOW
+                if sys.platform == "win32"
+                else 0,
             )
 
             # Wait a moment for connection
@@ -101,8 +110,11 @@ class LogMonitor:
 
     def _setup_subscriber(self):
         """Create Redis subscriber for enabled sources."""
-        channels = [f"logs:{s.name}" for s in self.config.sources if s.enabled]
-        self.subscriber = RedisLogSubscriber(self.config.redis_url, channels)
+        self.subscriber = RedisLogSubscriber(
+            self.config.redis_url,
+            self.config.log_stream_key,
+            [s.name for s in self.config.sources if s.enabled],
+        )
 
     def _force_refresh(self):
         """Force an immediate display refresh."""
@@ -134,15 +146,21 @@ class LogMonitor:
                     if self._start_port_forward():
                         time.sleep(1)
                         if not self._try_redis_connection():
-                            self.display.status_message = "Connection failed - Redis unreachable"
+                            self.display.status_message = (
+                                "Connection failed - Redis unreachable"
+                            )
                             self.display.connection_error = True
                             return
                     else:
-                        self.display.status_message = "Connection failed - port-forward error"
+                        self.display.status_message = (
+                            "Connection failed - port-forward error"
+                        )
                         self.display.connection_error = True
                         return
                 else:
-                    self.display.status_message = "Connection failed - Redis unreachable"
+                    self.display.status_message = (
+                        "Connection failed - Redis unreachable"
+                    )
                     self.display.connection_error = True
                     return
 
@@ -180,11 +198,12 @@ class LogMonitor:
         """
         try:
             import msvcrt
+
             # Process all pending keys to avoid buffer buildup
             while msvcrt.kbhit():
                 key = msvcrt.getch()
                 # Handle special keys (arrows, etc)
-                if key == b'\x00' or key == b'\xe0':
+                if key == b"\x00" or key == b"\xe0":
                     # Check if there's a second byte available
                     if msvcrt.kbhit():
                         special = msvcrt.getch()
@@ -193,7 +212,7 @@ class LogMonitor:
                             return False
                     # If no second byte, ignore the prefix
                 else:
-                    result = self._handle_key(key.decode('utf-8', errors='ignore'))
+                    result = self._handle_key(key.decode("utf-8", errors="ignore"))
                     if not result:
                         return False
         except ImportError:
@@ -201,6 +220,7 @@ class LogMonitor:
             import select
             import tty
             import termios
+
             old_settings = termios.tcgetattr(sys.stdin)
             try:
                 tty.setcbreak(sys.stdin.fileno())
@@ -218,16 +238,16 @@ class LogMonitor:
         # Scroll 6 lines at a time
         scroll_lines = 6
 
-        if key == b'H':  # Up arrow
+        if key == b"H":  # Up arrow
             self.display.scroll_up(scroll_lines)
             self._render_needed = True
-        elif key == b'P':  # Down arrow
+        elif key == b"P":  # Down arrow
             self.display.scroll_down(scroll_lines)
             self._render_needed = True
-        elif key == b'O':  # End key - jump to latest
+        elif key == b"O":  # End key - jump to latest
             self.display.scroll_to_bottom()
             self._render_needed = True
-        elif key == b'G':  # Home key - jump to oldest
+        elif key == b"G":  # Home key - jump to oldest
             self.display.scroll_up(9999)
             self._render_needed = True
         return True
@@ -240,58 +260,58 @@ class LogMonitor:
 
         key_lower = key.lower()
 
-        if key_lower == 'q':
+        if key_lower == "q":
             return False
-        elif key_lower == 'p':
+        elif key_lower == "p":
             self.display.toggle_pause()
             self._render_needed = True
-        elif key_lower == 'c':
+        elif key_lower == "c":
             self.display.clear()
             self._render_needed = True
-        elif key_lower == '1':
-            self.display.set_level_filter('DEBUG')
+        elif key_lower == "1":
+            self.display.set_level_filter("DEBUG")
             self._render_needed = True
-        elif key_lower == '2':
-            self.display.set_level_filter('INFO')
+        elif key_lower == "2":
+            self.display.set_level_filter("INFO")
             self._render_needed = True
-        elif key_lower == '3':
-            self.display.set_level_filter('WARNING')
+        elif key_lower == "3":
+            self.display.set_level_filter("WARNING")
             self._render_needed = True
-        elif key_lower == '4':
-            self.display.set_level_filter('ERROR')
+        elif key_lower == "4":
+            self.display.set_level_filter("ERROR")
             self._render_needed = True
-        elif key_lower == '5':
-            self.display.set_level_filter('CRITICAL')
+        elif key_lower == "5":
+            self.display.set_level_filter("CRITICAL")
             self._render_needed = True
-        elif key_lower == '0':
+        elif key_lower == "0":
             self.display.set_level_filter(None)
             self._render_needed = True
-        elif key_lower == 'b':
-            self.display.set_source_filter('backend')
+        elif key_lower == "b":
+            self.display.set_source_filter("backend")
             self._render_needed = True
-        elif key_lower == 'w':
-            self.display.set_source_filter('batch')
+        elif key_lower == "w":
+            self.display.set_source_filter("batch")
             self._render_needed = True
-        elif key_lower == 'r':
-            self.display.set_source_filter('ray')
+        elif key_lower == "r":
+            self.display.set_source_filter("ray")
             self._render_needed = True
-        elif key_lower == 'a':
+        elif key_lower == "a":
             self.display.set_source_filter(None)
             self.display.set_level_filter(None)
             self._render_needed = True
-        elif key_lower == 'l':
+        elif key_lower == "l":
             self._copy_logs_to_clipboard()
-        elif key_lower == 'x':
+        elif key_lower == "x":
             self._reconnect()
             self._render_needed = True
-        elif key_lower == 'k':
+        elif key_lower == "k":
             self._cancel_all_batch_tasks()
             self._render_needed = True
-        elif key == '/':
+        elif key == "/":
             # Start search input mode
             self.display.start_search_input()
             self._render_needed = True
-        elif key == '\x1b':  # Escape - clear search if active
+        elif key == "\x1b":  # Escape - clear search if active
             if self.display.filters.search:
                 self.display.clear_search()
                 self._render_needed = True
@@ -300,13 +320,13 @@ class LogMonitor:
 
     def _handle_search_key(self, key: str) -> bool:
         """Handle keyboard input in search mode. Returns False to quit."""
-        if key == '\r' or key == '\n':  # Enter - confirm search
+        if key == "\r" or key == "\n":  # Enter - confirm search
             self.display.confirm_search_input()
             self._render_needed = True
-        elif key == '\x1b':  # Escape - cancel search input
+        elif key == "\x1b":  # Escape - cancel search input
             self.display.cancel_search_input()
             self._render_needed = True
-        elif key == '\x08' or key == '\x7f':  # Backspace
+        elif key == "\x08" or key == "\x7f":  # Backspace
             self.display.backspace_search()
             self._render_needed = True
         elif key.isprintable() and len(key) == 1:
@@ -320,21 +340,31 @@ class LogMonitor:
         """Copy all filtered logs to clipboard."""
         try:
             import subprocess
+
             lines = []
             for line in self.display.lines:
                 # Apply same filters as display
-                if self.display.filters.level and line.level.upper() != self.display.filters.level.upper():
+                if (
+                    self.display.filters.level
+                    and line.level.upper() != self.display.filters.level.upper()
+                ):
                     continue
-                if self.display.filters.source and line.source != self.display.filters.source:
+                if (
+                    self.display.filters.source
+                    and line.source != self.display.filters.source
+                ):
                     continue
-                if self.display.filters.search and self.display.filters.search.lower() not in line.raw.lower():
+                if (
+                    self.display.filters.search
+                    and self.display.filters.search.lower() not in line.raw.lower()
+                ):
                     continue
                 lines.append(line.raw)
 
             text = "\n".join(lines)
             # Use clip.exe on Windows
-            process = subprocess.Popen(['clip'], stdin=subprocess.PIPE)
-            process.communicate(text.encode('utf-8'))
+            process = subprocess.Popen(["clip"], stdin=subprocess.PIPE)
+            process.communicate(text.encode("utf-8"))
         except Exception:
             pass  # Silently fail if clipboard not available
 
@@ -348,24 +378,26 @@ class LogMonitor:
         try:
             # Create Redis client
             parsed = urlparse(self.config.redis_url)
-            host = parsed.hostname or 'localhost'
-            if host == 'localhost':
-                host = '127.0.0.1'
+            host = parsed.hostname or "localhost"
+            if host == "localhost":
+                host = "127.0.0.1"
             client = redis.Redis(
                 host=host,
                 port=parsed.port or 6379,
-                db=int(parsed.path.lstrip('/') or 0),
+                db=int(parsed.path.lstrip("/") or 0),
                 decode_responses=True,
-                socket_timeout=5
+                socket_timeout=5,
             )
 
             # Publish cancel ALL message (session_id="*" means cancel all)
             cancel_channel = "tasks:cancel"
-            message = json.dumps({
-                "action": "cancel",
-                "session_id": "*",  # Wildcard = cancel all
-                "cancelled_at": datetime.now(timezone.utc).isoformat()
-            })
+            message = json.dumps(
+                {
+                    "action": "cancel",
+                    "session_id": "*",  # Wildcard = cancel all
+                    "cancelled_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
             subscribers = client.publish(cancel_channel, message)
 
             self.display.status_message = f"Cancel ALL sent to {subscribers} workers"
@@ -390,7 +422,9 @@ class LogMonitor:
                     self.console.print("[red]Failed to start port-forward[/]")
                     return
                 if not self._try_redis_connection():
-                    self.console.print("[red]Cannot connect to Redis after port-forward[/]")
+                    self.console.print(
+                        "[red]Cannot connect to Redis after port-forward[/]"
+                    )
                     return
             else:
                 self.console.print("[red]Cannot connect to Redis[/]")
@@ -412,7 +446,7 @@ class LogMonitor:
                 self.display.render(height=height, width=width),
                 console=self.console,
                 auto_refresh=False,  # Manual refresh control
-                screen=True
+                screen=True,
             ) as live:
                 self._live = live  # Store reference for forced refreshes
                 while self.running:
@@ -435,7 +469,9 @@ class LogMonitor:
                     # - When scrolled: only render on user input (_render_needed)
                     # This freezes the screen when scrolled, allowing text selection
                     is_scrolled = self.display.scroll_offset > 0
-                    should_render = self._render_needed or (not is_scrolled and has_new_logs)
+                    should_render = self._render_needed or (
+                        not is_scrolled and has_new_logs
+                    )
 
                     if should_render:
                         height = self.console.height or 30
@@ -446,7 +482,10 @@ class LogMonitor:
                         # Be conservative to avoid any overflow into header/footer
                         content_height = max(1, height - 11)
                         # Clamp scroll before render to avoid stale offsets (now in visual lines)
-                        self.display.clamp_scroll(visible_lines=content_height, available_width=available_width)
+                        self.display.clamp_scroll(
+                            visible_lines=content_height,
+                            available_width=available_width,
+                        )
                         live.update(self.display.render(height=height, width=width))
                         live.refresh()  # Manual refresh
                         self._render_needed = False

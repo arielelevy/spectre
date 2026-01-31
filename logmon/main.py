@@ -10,6 +10,7 @@ Options:
     python main.py --batch-only
     python main.py --local
 """
+
 import argparse
 import os
 import sys
@@ -48,40 +49,43 @@ Keyboard shortcuts:
 Requirements:
     - Redis server running
     - Services started with LOG_TO_REDIS=1
-"""
+""",
     )
 
     parser.add_argument(
-        "--redis-url", "-r",
+        "--redis-url",
+        "-r",
         default=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-        help="Redis URL (default: REDIS_URL env or redis://localhost:6379/0)"
+        help="Redis URL (default: REDIS_URL env or redis://localhost:6379/0)",
     )
     parser.add_argument(
-        "--backend-only", "-b",
-        action="store_true",
-        help="Monitor backend logs only"
+        "--backend-only", "-b", action="store_true", help="Monitor backend logs only"
     )
     parser.add_argument(
-        "--batch-only", "-w",
-        action="store_true",
-        help="Monitor batch worker logs only"
+        "--batch-only", "-w", action="store_true", help="Monitor batch worker logs only"
     )
     parser.add_argument(
         "--refresh-rate",
         type=float,
         default=0.2,
-        help="Refresh rate in seconds (default: 0.2)"
+        help="Refresh rate in seconds (default: 0.2)",
     )
     parser.add_argument(
-        "--max-lines", "-m",
+        "--log-stream-key",
+        default=os.getenv("LOG_QUEUE_KEY", "log:queue"),
+        help="Redis stream key for logs (default: LOG_QUEUE_KEY env or log:queue)",
+    )
+    parser.add_argument(
+        "--max-lines",
+        "-m",
         type=int,
         default=1000,
-        help="Maximum lines to keep in buffer (default: 1000)"
+        help="Maximum lines to keep in buffer (default: 1000)",
     )
     parser.add_argument(
         "--wait",
         action="store_true",
-        help="Wait for keypress before starting (default: start immediately)"
+        help="Wait for keypress before starting (default: start immediately)",
     )
 
     args = parser.parse_args()
@@ -102,7 +106,7 @@ Requirements:
     print("  Spectre Monitor (Redis pub/sub)")
     print("=" * 50)
     print(f"  Redis: {args.redis_url}")
-    print(f"  Channels: {', '.join(f'logs:{s.name}' for s in sources)}")
+    print(f"  Stream: {args.log_stream_key}")
     print(f"  Refresh: {args.refresh_rate}s")
     print(f"  Mode: Local")
     print()
@@ -114,6 +118,7 @@ Requirements:
         print("=" * 50)
         try:
             import msvcrt
+
             msvcrt.getch()
         except ImportError:
             input()
@@ -124,9 +129,10 @@ Requirements:
     config = MonitorConfig(
         redis_url=args.redis_url,
         sources=sources,
+        log_stream_key=args.log_stream_key,
         refresh_rate=args.refresh_rate,
         max_lines=args.max_lines,
-        port_forward=None
+        port_forward=None,
     )
 
     # Run monitor (handles port-forward and reconnection internally)
