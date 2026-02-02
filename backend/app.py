@@ -52,7 +52,8 @@ async def startup_event():
         logger.info("- Redis: ✅ [OK] version=%s", info.get("redis_version", "unknown"))
     except Exception as e:
         logger.error("- Redis: ❗ [ERR] %s", e)
-        raise RuntimeError("Redis is required for backend startup") from e
+        logger.error("- Redis: shutdown required; exiting")
+        os._exit(1)
 
     # Check ClickHouse
     logger.info("- ClickHouse: connecting...")
@@ -64,6 +65,8 @@ async def startup_event():
             logger.warning("- ClickHouse: ⚠️ [WARN] ping failed")
     except Exception as e:
         logger.error("- ClickHouse: ❗ [ERR] %s", e)
+        logger.error("- ClickHouse: shutdown required; exiting")
+        os._exit(1)
 
     logger.info(
         "======================================================================"
