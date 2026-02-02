@@ -270,7 +270,7 @@ def get_neighbors(node_id: str, limit: int = Query(400, ge=50, le=2000)):
 def expand_graph(
     node_id: str,
     depth: int = Query(3, ge=1, le=5),
-    max_nodes: int = Query(800, ge=50, le=5000),
+    max_nodes: int = Query(800, ge=10, le=5000),
     max_edges: int = Query(2000, ge=100, le=10000),
 ):
     sanitized_id = node_id.replace("'", "")
