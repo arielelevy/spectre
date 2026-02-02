@@ -93,7 +93,6 @@ export default function SentinelInterface() {
   const [graphZoom, setGraphZoom] = useState(1);
   const [graphFullscreen, setGraphFullscreen] = useState(false);
   const [graphPan, setGraphPan] = useState({ x: 0, y: 0 });
-  const [isPanning, setIsPanning] = useState(false);
   const [hoverNode, setHoverNode] = useState<GraphNode | null>(null);
   const [hoverPos, setHoverPos] = useState({ x: 0, y: 0 });
   const [hoverEdge, setHoverEdge] = useState<GraphEdge | null>(null);
@@ -102,9 +101,20 @@ export default function SentinelInterface() {
   const panStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const graphContainerRef = useRef<HTMLDivElement | null>(null);
   const graphFullscreenRef = useRef<HTMLDivElement | null>(null);
-  const graphCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const graphFullscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const graphSvgRef = useRef<SVGSVGElement | null>(null);
+  const graphFullscreenSvgRef = useRef<SVGSVGElement | null>(null);
+  const graphZoomBehaviorRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
+  const graphZoomTransformRef = useRef(d3.zoomIdentity);
+  const zoomRafRef = useRef<number | null>(null);
+  const zoomPendingTransformRef = useRef<d3.ZoomTransform | null>(null);
+  const graphSimulationRef = useRef<d3.Simulation<GraphLayoutNode, undefined> | null>(null);
+  const graphRuntimeRef = useRef<{ nodes: GraphLayoutNode[]; edges: GraphEdge[] } | null>(null);
+  const hoverNodeRef = useRef<GraphNode | null>(null);
+  const hoverEdgeRef = useRef<GraphEdge | null>(null);
+  const graphFocusRef = useRef<string>('');
   const graphZoomRef = useRef(1);
+  const graphRenderRafRef = useRef<number | null>(null);
+  const graphRenderPendingRef = useRef(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
   const defaultGraphSeed = 'api';
@@ -161,30 +171,7 @@ export default function SentinelInterface() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [apiBaseUrl]);
 
-  const handleGraphWheel = (event: React.WheelEvent<HTMLDivElement>) => {
-    const target = event.currentTarget as HTMLElement | null;
-    if (!target) return;
-    const rect = target.getBoundingClientRect();
-    if (!rect.width || !rect.height) return;
-
-    const mouseX = event.clientX - rect.left;
-    const mouseY = event.clientY - rect.top;
-    const viewSize = 360;
-    const svgX = (mouseX / rect.width) * viewSize - viewSize / 2;
-    const svgY = (mouseY / rect.height) * viewSize - viewSize / 2;
-
-    const prevZoom = graphZoomRef.current;
-    const zoomFactor = event.deltaY < 0 ? 1.2 : 1 / 1.2;
-    const nextZoom = Math.min(3, Math.max(0.6, prevZoom * zoomFactor));
-    if (nextZoom === prevZoom) return;
-
-    setGraphPan((prev) => {
-      const nextX = ((svgX + prev.x) * prevZoom) / nextZoom - svgX;
-      const nextY = ((svgY + prev.y) * prevZoom) / nextZoom - svgY;
-      return { x: nextX, y: nextY };
-    });
-    setGraphZoom(nextZoom);
-  };
+  const handleGraphWheel = () => {};
 
   const handleSendMessage = async () => {
     if (!chatInput.trim()) return;
@@ -205,16 +192,16 @@ export default function SentinelInterface() {
     setIsTyping(false);
   };
 
-  const handleFocusNode = async (nodeId: string) => {
+  const handleFocusNode = async (nodeId: string, nodeType: string) => {
     setGraphFocus(nodeId);
     setGraphLoading(true);
     setGraphError('');
-    setGraphPan({ x: 0, y: 0 });
-    setGraphZoom(1);
+    setGraphDataset(nodeType === 'REPO' ? 'repoUsers' : 'repos');
+    resetZoom();
     try {
-      const endpoint = graphDataset === 'repos'
-        ? `/graph/expand?node_id=${encodeURIComponent(nodeId)}&depth=3&max_nodes=800&max_edges=2000`
-        : `/graph/expand?node_id=${encodeURIComponent(nodeId)}&depth=3&max_nodes=800&max_edges=2000`;
+      const endpoint = nodeType === 'REPO'
+        ? `/graph/expand?node_id=${encodeURIComponent(nodeId)}&depth=2&max_nodes=800&max_edges=2000`
+        : `/graph/expand?node_id=${encodeURIComponent(nodeId)}&depth=2&max_nodes=800&max_edges=2000`;
       const response = await fetch(`${apiBaseUrl}${endpoint}`);
       if (!response.ok) {
         throw new Error(`Graph expand failed (${response.status})`);
@@ -236,6 +223,7 @@ export default function SentinelInterface() {
     setGraphLoading(true);
     setGraphError('');
     setGraphDataset(dataset);
+    resetZoom();
     try {
       const endpoint = dataset === 'repos'
         ? '/graph/top?repo_limit=14&user_limit=14&edge_limit=800'
@@ -257,7 +245,7 @@ export default function SentinelInterface() {
       } else {
         if (preserveFocusId) {
           const expandResponse = await fetch(
-            `${apiBaseUrl}/graph/expand?node_id=${encodeURIComponent(preserveFocusId)}&depth=3&max_nodes=800&max_edges=2000`
+            `${apiBaseUrl}/graph/expand?node_id=${encodeURIComponent(preserveFocusId)}&depth=2&max_nodes=800&max_edges=2000`
           );
           if (expandResponse.ok) {
             const expandData = (await expandResponse.json()) as GraphData;
@@ -279,16 +267,97 @@ export default function SentinelInterface() {
     }
   };
 
-  const zoomIn = () => setGraphZoom((prev) => Math.min(prev * 1.2, 3));
-  const zoomOut = () => setGraphZoom((prev) => Math.max(prev / 1.2, 0.6));
+  const zoomIn = () => {
+    const svg = graphSvgRef.current;
+    const zoom = graphZoomBehaviorRef.current;
+    if (svg && zoom) {
+      d3.select(svg).call(zoom.scaleBy, 1.2);
+    }
+  };
+  const zoomOut = () => {
+    const svg = graphSvgRef.current;
+    const zoom = graphZoomBehaviorRef.current;
+    if (svg && zoom) {
+      d3.select(svg).call(zoom.scaleBy, 1 / 1.2);
+    }
+  };
   const resetZoom = () => {
-    setGraphZoom(1);
-    setGraphPan({ x: 0, y: 0 });
+    const svg = graphSvgRef.current;
+    const zoom = graphZoomBehaviorRef.current;
+    if (svg && zoom) {
+      d3.select(svg).call(zoom.transform, d3.zoomIdentity);
+    }
   };
 
   useEffect(() => {
     graphZoomRef.current = graphZoom;
   }, [graphZoom]);
+
+  const scheduleGraphRender = () => {
+    if (graphRenderRafRef.current !== null) return;
+    graphRenderPendingRef.current = true;
+    graphRenderRafRef.current = window.requestAnimationFrame(() => {
+      graphRenderRafRef.current = null;
+      if (!graphRenderPendingRef.current) return;
+      graphRenderPendingRef.current = false;
+      renderGraphWithD3(
+        graphSvgRef.current,
+        graphContainerRef.current,
+        graphRuntimeRef.current,
+        graphFocusRef.current,
+        hoverNodeRef.current,
+        hoverEdgeRef.current
+      );
+      if (graphFullscreen) {
+        renderGraphWithD3(
+          graphFullscreenSvgRef.current,
+          graphFullscreenRef.current,
+          graphRuntimeRef.current,
+          graphFocusRef.current,
+          hoverNodeRef.current,
+          hoverEdgeRef.current
+        );
+      }
+    });
+  };
+
+  useEffect(() => {
+    hoverNodeRef.current = hoverNode;
+  }, [hoverNode]);
+
+  useEffect(() => {
+    hoverEdgeRef.current = hoverEdge;
+  }, [hoverEdge]);
+
+  useEffect(() => {
+    graphFocusRef.current = graphFocus;
+  }, [graphFocus]);
+
+  useEffect(() => {
+    if (!graphLayout || !graphFocus) return;
+    const focusNode = graphLayout.nodes.find((node) => node.id === graphFocus);
+    const zoom = graphZoomBehaviorRef.current;
+    const svg = graphSvgRef.current;
+    const fullscreenSvg = graphFullscreenSvgRef.current;
+    if (!focusNode || !zoom || !svg) return;
+
+    const currentK = graphZoomTransformRef.current.k || 1;
+    const transform = d3.zoomIdentity
+      .translate(-focusNode.x * currentK, -focusNode.y * currentK)
+      .scale(currentK);
+
+    d3.select(svg).transition().duration(350).call(zoom.transform, transform);
+    if (graphFullscreen && fullscreenSvg) {
+      d3.select(fullscreenSvg).transition().duration(350).call(zoom.transform, transform);
+    }
+  }, [graphLayout, graphFocus, graphFullscreen]);
+
+  useEffect(() => () => {
+    if (graphRenderRafRef.current !== null) {
+      window.cancelAnimationFrame(graphRenderRafRef.current);
+      graphRenderRafRef.current = null;
+    }
+  }, []);
 
   const getVisibleEdges = (edges: GraphEdge[]) => {
     const sortedEdges = [...edges].sort((a, b) => (b.weight || 1) - (a.weight || 1));
@@ -297,57 +366,86 @@ export default function SentinelInterface() {
   };
 
   const getVisibleNodeIds = (edges: GraphEdge[], focusId: string) => {
-    const visibleNodeIds = new Set<string>();
-    if (graphZoom < 1.1) {
-      edges.forEach((edge) => {
-        visibleNodeIds.add(edge.src);
-        visibleNodeIds.add(edge.dst);
+    if (!focusId) return null;
+
+    const zoom = graphZoomRef.current;
+    const maxDepth = zoom >= 1.6 ? 1 : zoom >= 1.2 ? 2 : 3;
+    const adjacency = new Map<string, string[]>();
+
+    edges.forEach((edge) => {
+      if (!adjacency.has(edge.src)) adjacency.set(edge.src, []);
+      if (!adjacency.has(edge.dst)) adjacency.set(edge.dst, []);
+      adjacency.get(edge.src)!.push(edge.dst);
+      adjacency.get(edge.dst)!.push(edge.src);
+    });
+
+    const visibleNodeIds = new Set<string>([focusId]);
+    let frontier = [focusId];
+    let depth = 0;
+
+    while (frontier.length && depth < maxDepth) {
+      const next: string[] = [];
+      frontier.forEach((nodeId) => {
+        const neighbors = adjacency.get(nodeId) || [];
+        neighbors.forEach((neighbor) => {
+          if (!visibleNodeIds.has(neighbor)) {
+            visibleNodeIds.add(neighbor);
+            next.push(neighbor);
+          }
+        });
       });
-      if (focusId) {
-        visibleNodeIds.add(focusId);
-      }
+      frontier = next;
+      depth += 1;
     }
+
     return visibleNodeIds;
   };
 
-  const drawGraph = (
-    canvas: HTMLCanvasElement | null,
+  const renderGraphWithD3 = (
+    svg: SVGSVGElement | null,
     container: HTMLDivElement | null,
     layout: { nodes: GraphLayoutNode[]; edges: GraphEdge[] } | null,
     focusId: string,
     hoveredNode: GraphNode | null,
     hoveredEdge: GraphEdge | null
   ) => {
-    if (!canvas || !container || !layout) return;
-
+    if (!svg || !container || !layout) return;
     const rect = container.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
 
-    const dpr = window.devicePixelRatio || 1;
-    const width = Math.max(1, Math.floor(rect.width));
-    const height = Math.max(1, Math.floor(rect.height));
-
-    if (canvas.width !== width * dpr || canvas.height !== height * dpr) {
-      canvas.width = width * dpr;
-      canvas.height = height * dpr;
-      canvas.style.width = `${width}px`;
-      canvas.style.height = `${height}px`;
-    }
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, width, height);
-
+    const width = rect.width;
+    const height = rect.height;
     const viewSize = 360;
     const scale = Math.min(width, height) / viewSize;
 
-    ctx.save();
-    ctx.translate(width / 2, height / 2);
-    ctx.scale(scale, scale);
-    ctx.translate(graphPan.x, graphPan.y);
-    ctx.scale(graphZoom, graphZoom);
+    const selection = d3.select(svg);
+    selection.attr('viewBox', `0 0 ${width} ${height}`).attr('class', 'w-full h-full');
+
+    const defs = selection.select('defs');
+    if (defs.empty()) {
+        selection
+          .append('defs')
+          .append('radialGradient')
+          .attr('id', 'nodeGlow')
+          .attr('cx', '50%')
+          .attr('cy', '50%')
+          .attr('r', '50%')
+          .call((gradient) => {
+            gradient.append('stop').attr('offset', '0%').attr('stop-color', '#22d3ee').attr('stop-opacity', 0.6);
+            gradient.append('stop').attr('offset', '100%').attr('stop-color', '#0ea5e9').attr('stop-opacity', 0);
+          });
+    }
+
+    let root = selection.select<SVGGElement>('g.graph-root');
+    if (root.empty()) {
+      root = selection.append('g').attr('class', 'graph-root');
+    }
+
+    const viewTransform = graphZoomTransformRef.current;
+    root.attr(
+      'transform',
+      `translate(${width / 2} ${height / 2}) scale(${scale}) translate(${viewTransform.x} ${viewTransform.y}) scale(${viewTransform.k})`
+    );
 
     const weights = layout.edges.map((edge) => edge.weight || 1);
     const minWeight = Math.min(...weights, 1);
@@ -358,204 +456,162 @@ export default function SentinelInterface() {
     };
 
     const visibleEdges = getVisibleEdges(layout.edges);
-    const visibleNodeIds = getVisibleNodeIds(visibleEdges, focusId);
+    const visibleNodeIds = getVisibleNodeIds(layout.edges, focusId);
     const nodeMap = new Map(layout.nodes.map((node) => [node.id, node]));
+    const nodes = visibleNodeIds
+      ? layout.nodes.filter((node) => visibleNodeIds.has(node.id))
+      : graphZoomRef.current < 1.1
+      ? layout.nodes.filter((node) => visibleEdges.some((edge) => edge.src === node.id || edge.dst === node.id))
+      : layout.nodes;
 
+    const nodeImportance = new Map<string, number>();
     visibleEdges.forEach((edge) => {
-      const src = nodeMap.get(edge.src);
-      const dst = nodeMap.get(edge.dst);
-      if (!src || !dst) return;
-      const intensity = normalizeWeight(edge.weight || 1);
-      const isHovered = hoveredEdge && hoveredEdge.src === edge.src && hoveredEdge.dst === edge.dst;
-      ctx.strokeStyle = isHovered
-        ? `rgba(16,185,129,${Math.min(1, intensity + 0.3)})`
-        : `rgba(14,116,144,${intensity.toFixed(2)})`;
-      ctx.lineWidth = (0.6 + intensity * 1.4) * (isHovered ? 1.6 : 1);
-      ctx.beginPath();
-      ctx.moveTo(src.x, src.y);
-      ctx.lineTo(dst.x, dst.y);
-      ctx.stroke();
+      nodeImportance.set(edge.src, (nodeImportance.get(edge.src) || 0) + (edge.weight || 1));
+      nodeImportance.set(edge.dst, (nodeImportance.get(edge.dst) || 0) + (edge.weight || 1));
     });
 
-    layout.nodes
-      .filter((node) => (graphZoom < 1.1 ? visibleNodeIds.has(node.id) : true))
-      .forEach((node) => {
-        const isHovered = hoveredNode && hoveredNode.id === node.id;
-        const radius = node.isCenter ? 16 : 10;
-        ctx.fillStyle = node.isCenter ? '#22d3ee' : '#0ea5e9';
-        ctx.globalAlpha = node.isCenter ? 0.9 : 0.6;
-        ctx.beginPath();
-        ctx.arc(node.x, node.y, isHovered ? radius + 2 : radius, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.globalAlpha = 1;
+    const limitedNodes = nodes
+      .slice()
+      .sort((a, b) => (nodeImportance.get(b.id) || 0) - (nodeImportance.get(a.id) || 0))
+      .slice(0, 50);
 
-        if (node.isCenter) {
-          const gradient = ctx.createRadialGradient(node.x, node.y, 4, node.x, node.y, 28);
-          gradient.addColorStop(0, 'rgba(34,211,238,0.45)');
-          gradient.addColorStop(1, 'rgba(14,165,233,0)');
-          ctx.fillStyle = gradient;
-          ctx.beginPath();
-          ctx.arc(node.x, node.y, 28, 0, Math.PI * 2);
-          ctx.fill();
-        }
+    const limitedNodeIds = new Set(limitedNodes.map((node) => node.id));
+    if (focusId && !limitedNodeIds.has(focusId)) {
+      const focusNode = nodes.find((node) => node.id === focusId);
+      if (focusNode) {
+        limitedNodes.pop();
+        limitedNodes.unshift(focusNode);
+        limitedNodeIds.add(focusId);
+      }
+    }
 
-        ctx.fillStyle = 'rgba(226,232,240,0.7)';
-        ctx.font = '8px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'top';
-        const label = node.id.length > 18 ? `${node.id.slice(0, 18)}…` : node.id;
-        ctx.fillText(label, node.x, node.y + (node.isCenter ? 26 : 20));
+    const visibleEdgesLimited = visibleEdges.filter(
+      (edge) => limitedNodeIds.has(edge.src) && limitedNodeIds.has(edge.dst)
+    );
+
+    const edgeSelection = root
+      .selectAll<SVGLineElement, GraphEdge>('line.edge')
+      .data(visibleEdgesLimited, (edge) => `${edge.src}-${edge.dst}`);
+
+    edgeSelection.exit().remove();
+
+    const edgeEnter = edgeSelection
+      .enter()
+      .append('line')
+      .attr('class', 'edge')
+      .style('pointer-events', 'stroke');
+    edgeEnter.merge(edgeSelection as d3.Selection<SVGLineElement, GraphEdge, SVGGElement, unknown>)
+      .attr('x1', (edge) => nodeMap.get(edge.src)?.x || 0)
+      .attr('y1', (edge) => nodeMap.get(edge.src)?.y || 0)
+      .attr('x2', (edge) => nodeMap.get(edge.dst)?.x || 0)
+      .attr('y2', (edge) => nodeMap.get(edge.dst)?.y || 0)
+      .attr('stroke', (edge) => {
+        const intensity = normalizeWeight(edge.weight || 1);
+        const isHovered = hoveredEdge && hoveredEdge.src === edge.src && hoveredEdge.dst === edge.dst;
+        return isHovered
+          ? `rgba(16,185,129,${Math.min(1, intensity + 0.3)})`
+          : `rgba(14,116,144,${intensity.toFixed(2)})`;
+      })
+      .attr('stroke-width', (edge) => {
+        const intensity = normalizeWeight(edge.weight || 1);
+        const isHovered = hoveredEdge && hoveredEdge.src === edge.src && hoveredEdge.dst === edge.dst;
+        return (0.35 + intensity * 0.75) * (isHovered ? 1.4 : 1);
+      })
+      .on('mouseenter', (event, edge) => {
+        event.stopPropagation();
+        setHoverEdge(edge);
+        setHoverNode(null);
+      })
+      .on('mouseleave', () => setHoverEdge(null));
+
+    const nodeSelection = root
+      .selectAll<SVGGElement, GraphLayoutNode>('g.node')
+      .data(limitedNodes, (node) => node.id);
+
+    nodeSelection.exit().remove();
+
+    const nodeEnter = nodeSelection.enter().append('g').attr('class', 'node');
+    nodeEnter.append('circle');
+    nodeEnter.append('circle').attr('class', 'glow');
+    nodeEnter.append('text');
+
+    const nodeMerge = nodeEnter.merge(
+      nodeSelection as d3.Selection<SVGGElement, GraphLayoutNode, SVGGElement, unknown>
+    );
+
+    const dragBehavior = d3
+      .drag<SVGGElement, GraphLayoutNode>()
+      .touchable(() => false)
+      .on('start', (event) => {
+        event.sourceEvent?.stopPropagation();
+        graphSimulationRef.current?.alphaTarget(0.05).restart();
+      })
+      .on('drag', function (event, node) {
+        const delta = 1 / Math.max(0.001, scale * graphZoomTransformRef.current.k);
+        node.fx = node.x + event.dx * delta;
+        node.fy = node.y + event.dy * delta;
+        d3.select(this).attr('transform', `translate(${node.x} ${node.y})`);
+        root
+          .selectAll<SVGLineElement, GraphEdge>('line.edge')
+          .attr('x1', (edge) => nodeMap.get(edge.src)?.x || 0)
+          .attr('y1', (edge) => nodeMap.get(edge.src)?.y || 0)
+          .attr('x2', (edge) => nodeMap.get(edge.dst)?.x || 0)
+          .attr('y2', (edge) => nodeMap.get(edge.dst)?.y || 0);
+      })
+      .on('end', () => {
+        graphSimulationRef.current?.alphaTarget(0);
       });
 
-    ctx.restore();
+    nodeMerge
+      .attr('transform', (node) => `translate(${node.x} ${node.y})`)
+      .on('click', (event, node) => {
+        event.stopPropagation();
+        handleFocusNode(node.id, node.type);
+      })
+      .on('mouseenter', (event, node) => {
+        event.stopPropagation();
+        setHoverNode(node);
+        setHoverEdge(null);
+      })
+      .on('mouseleave', () => setHoverNode(null))
+      .call(dragBehavior)
+      .each(function (node) {
+        const group = d3.select(this);
+        const isHovered = hoveredNode && hoveredNode.id === node.id;
+        const radius = node.isCenter ? 16 : 10;
+
+        group.select('circle')
+          .attr('r', isHovered ? radius + 2 : radius)
+          .attr('fill', node.isCenter ? '#22d3ee' : '#0ea5e9')
+          .attr('opacity', node.isCenter ? 0.9 : 0.6);
+
+        group.select('circle.glow')
+          .attr('r', node.isCenter ? 28 : 0)
+          .attr('fill', 'url(#nodeGlow)')
+          .attr('opacity', node.isCenter ? 1 : 0);
+
+        const label = node.id.length > 18 ? `${node.id.slice(0, 18)}…` : node.id;
+        group.select('text')
+          .attr('y', node.isCenter ? 26 : 20)
+          .attr('text-anchor', 'middle')
+          .attr('font-size', 8)
+          .attr('fill', 'rgba(226,232,240,0.7)')
+          .text(label);
+      });
+
   };
 
   const buildGraphLayout = (data: GraphData | null, focusId: string) => {
     if (!data || data.nodes.length === 0) return { nodes: [], edges: [], size: 360 };
     const size = 360;
-    const radius = 80;
     const centerNode = data.nodes.find((node) => node.id === focusId) || data.nodes[0];
-
-    if (graphMode === 'focus' && centerNode) {
-      const degreeMap = new Map<string, number>();
-      data.edges.forEach((edge) => {
-        degreeMap.set(edge.src, (degreeMap.get(edge.src) || 0) + 1);
-        degreeMap.set(edge.dst, (degreeMap.get(edge.dst) || 0) + 1);
-      });
-      const adjacency = new Map<string, Set<string>>();
-      data.edges.forEach((edge) => {
-        if (!adjacency.has(edge.src)) adjacency.set(edge.src, new Set());
-        if (!adjacency.has(edge.dst)) adjacency.set(edge.dst, new Set());
-        adjacency.get(edge.src)!.add(edge.dst);
-        adjacency.get(edge.dst)!.add(edge.src);
-      });
-
-      const maxDepth = graphZoom < 1 ? 2 : graphZoom < 1.6 ? 3 : 4;
-      const maxNodes = graphZoom < 1 ? 120 : graphZoom < 1.6 ? 240 : 400;
-      const levels = new Map<string, number>();
-      const queue: string[] = [centerNode.id];
-      levels.set(centerNode.id, 0);
-
-      while (queue.length && levels.size < maxNodes) {
-        const current = queue.shift() as string;
-        const depth = levels.get(current) || 0;
-        if (depth >= maxDepth) continue;
-        const neighbors = adjacency.get(current) || new Set();
-        neighbors.forEach((neighbor) => {
-          if (!levels.has(neighbor) && levels.size < maxNodes) {
-            levels.set(neighbor, depth + 1);
-            queue.push(neighbor);
-          }
-        });
-      }
-
-      const levelGroups = new Map<number, GraphNode[]>();
-      data.nodes.forEach((node) => {
-        const level = levels.get(node.id);
-        if (level === undefined) return;
-        if (!levelGroups.has(level)) levelGroups.set(level, []);
-        levelGroups.get(level)!.push(node);
-      });
-
-      const nodes = [] as GraphLayoutNode[];
-      nodes.push({ ...centerNode, x: 0, y: 0, isCenter: true });
-
-      const levelLimit = graphZoom < 1 ? 8 : graphZoom < 1.6 ? 14 : 22;
-
-      for (let level = 1; level <= maxDepth; level += 1) {
-        const ringNodes = (levelGroups.get(level) || [])
-          .sort((a, b) => (degreeMap.get(b.id) || 0) - (degreeMap.get(a.id) || 0))
-          .slice(0, levelLimit);
-        const ringRadius = radius * level;
-        ringNodes.forEach((node, index) => {
-          const angle = (2 * Math.PI * index) / Math.max(ringNodes.length, 1);
-          nodes.push({
-            ...node,
-            x: Math.cos(angle) * ringRadius,
-            y: Math.sin(angle) * ringRadius,
-            isCenter: false,
-          });
-        });
-      }
-
-      const position = new Map(nodes.map((node) => [node.id, node]));
-      const edges = data.edges.filter((edge) => position.has(edge.src) && position.has(edge.dst));
-      return { nodes, edges, size };
-    }
-
-    const edgeSorted = [...data.edges].sort((a, b) => (b.weight || 1) - (a.weight || 1));
-    const edgeLimit = graphZoom < 0.9 ? 120 : graphZoom < 1.3 ? 240 : 500;
-    const overviewEdges = edgeSorted.slice(0, edgeLimit);
-
-    const adjacency = new Map<string, Set<string>>();
-    overviewEdges.forEach((edge) => {
-      if (!adjacency.has(edge.src)) adjacency.set(edge.src, new Set());
-      if (!adjacency.has(edge.dst)) adjacency.set(edge.dst, new Set());
-      adjacency.get(edge.src)!.add(edge.dst);
-      adjacency.get(edge.dst)!.add(edge.src);
-    });
-
-    const degreeMap = new Map<string, number>();
-    overviewEdges.forEach((edge) => {
-      degreeMap.set(edge.src, (degreeMap.get(edge.src) || 0) + 1);
-      degreeMap.set(edge.dst, (degreeMap.get(edge.dst) || 0) + 1);
-    });
-
-    const sortedNodes = [...degreeMap.entries()].sort((a, b) => b[1] - a[1]);
-    const seedId = sortedNodes[0]?.[0] || centerNode.id;
-
-    const maxDepth = graphZoom < 0.9 ? 1 : graphZoom < 1.3 ? 2 : 3;
-    const maxNodes = graphZoom < 0.9 ? 30 : graphZoom < 1.3 ? 60 : 120;
-    const levels = new Map<string, number>();
-    const queue: string[] = [seedId];
-    levels.set(seedId, 0);
-
-    while (queue.length && levels.size < maxNodes) {
-      const current = queue.shift() as string;
-      const depth = levels.get(current) || 0;
-      if (depth >= maxDepth) continue;
-      const neighbors = adjacency.get(current) || new Set();
-      neighbors.forEach((neighbor) => {
-        if (!levels.has(neighbor) && levels.size < maxNodes) {
-          levels.set(neighbor, depth + 1);
-          queue.push(neighbor);
-        }
-      });
-    }
-
-    const levelGroups = new Map<number, GraphNode[]>();
-    data.nodes.forEach((node) => {
-      const level = levels.get(node.id);
-      if (level === undefined) return;
-      if (!levelGroups.has(level)) levelGroups.set(level, []);
-      levelGroups.get(level)!.push(node);
-    });
-
-      const nodes = [] as GraphLayoutNode[];
-      const seedNode = data.nodes.find((node) => node.id === seedId) || centerNode;
-      nodes.push({ ...seedNode, x: 0, y: 0, isCenter: true });
-
-    const levelLimit = graphZoom < 0.9 ? 8 : graphZoom < 1.3 ? 12 : 18;
-
-    for (let level = 1; level <= maxDepth; level += 1) {
-      const ringNodes = (levelGroups.get(level) || [])
-        .sort((a, b) => (degreeMap.get(b.id) || 0) - (degreeMap.get(a.id) || 0))
-        .slice(0, levelLimit);
-      const ringRadius = radius * level;
-      ringNodes.forEach((node, index) => {
-        const angle = (2 * Math.PI * index) / Math.max(ringNodes.length, 1);
-        nodes.push({
-          ...node,
-          x: Math.cos(angle) * ringRadius,
-          y: Math.sin(angle) * ringRadius,
-          isCenter: false,
-        });
-      });
-    }
-
-    const position = new Map(nodes.map((node) => [node.id, node]));
-    const edges = overviewEdges.filter((edge) => position.has(edge.src) && position.has(edge.dst));
-    return { nodes, edges, size };
+    const nodes = data.nodes.map((node) => ({
+      ...node,
+      x: Number.isFinite((node as GraphLayoutNode).x) ? (node as GraphLayoutNode).x : (Math.random() - 0.5) * 120,
+      y: Number.isFinite((node as GraphLayoutNode).y) ? (node as GraphLayoutNode).y : (Math.random() - 0.5) * 120,
+      isCenter: node.id === centerNode.id,
+    }));
+    return { nodes, edges: data.edges, size };
   };
 
   useEffect(() => {
@@ -570,67 +626,109 @@ export default function SentinelInterface() {
     }
 
     const nodes = layout.nodes.map((node) => ({ ...node }));
-    const links = layout.edges.map((edge) => ({ ...edge, source: edge.src, target: edge.dst }));
-    const linkForce = d3
-      .forceLink(links)
-      .id((node) => (node as GraphLayoutNode).id)
-      .distance((link) => {
-        const weight = (link as GraphEdge).weight || 1;
-        return Math.max(24, 120 - weight * 6);
-      })
-      .strength(0.6);
+    const nodeIdSet = new Set(layout.nodes.map((node) => node.id));
+    const links = layout.edges
+      .filter((edge) => nodeIdSet.has(edge.src) && nodeIdSet.has(edge.dst))
+      .map((edge) => ({ ...edge, source: edge.src, target: edge.dst }));
 
     const simulation = d3
       .forceSimulation(nodes as d3.SimulationNodeDatum[])
-      .force('link', linkForce)
-      .force('charge', d3.forceManyBody().strength(graphMode === 'focus' ? -140 : -90))
+      .force(
+        'link',
+        d3
+          .forceLink(links)
+          .id((node) => (node as GraphLayoutNode).id)
+          .distance((link) => {
+            const weight = (link as GraphEdge).weight || 1;
+            return Math.max(40, 120 - weight * 8);
+          })
+          .strength(0.5)
+      )
+      .force('charge', d3.forceManyBody().strength(graphMode === 'focus' ? -100 : -70))
       .force('center', d3.forceCenter(0, 0))
       .force(
         'collide',
-        d3.forceCollide().radius((node) => ((node as GraphLayoutNode).isCenter ? 22 : 14))
+        d3.forceCollide().radius((node) => ((node as GraphLayoutNode).isCenter ? 24 : 14))
       )
-      .alpha(0.9)
-      .alphaDecay(0.07);
+      .alpha(0.3)
+      .alphaDecay(0.15)
+      .velocityDecay(0.6)
+      .stop();
 
-    for (let i = 0; i < 70; i += 1) {
+    graphSimulationRef.current?.stop();
+    graphSimulationRef.current = simulation as d3.Simulation<GraphLayoutNode, undefined>;
+    graphRuntimeRef.current = { nodes: nodes as GraphLayoutNode[], edges: layout.edges };
+
+    for (let i = 0; i < 80; i += 1) {
       simulation.tick();
     }
-    simulation.stop();
 
-    setGraphLayout({
-      nodes: nodes.map((node) => ({
-        ...(node as GraphLayoutNode),
-        x: Number.isFinite((node as GraphLayoutNode).x) ? (node as GraphLayoutNode).x : 0,
-        y: Number.isFinite((node as GraphLayoutNode).y) ? (node as GraphLayoutNode).y : 0,
-      })),
-      edges: layout.edges,
-      size: layout.size,
-    });
-  }, [graphData, graphFocus, graphMode, graphZoom]);
+    scheduleGraphRender();
+
+    setGraphLayout({ nodes, edges: layout.edges, size: layout.size });
+    return () => simulation.stop();
+  }, [graphData, graphFocus, graphMode, graphFullscreen]);
+
+  useEffect(() => {
+    const svg = graphSvgRef.current;
+    const container = graphContainerRef.current;
+    const fullscreenSvg = graphFullscreenSvgRef.current;
+    const fullscreenContainer = graphFullscreenRef.current;
+    if (!svg || !container) return;
+
+    const zoomBehavior = d3
+      .zoom<SVGSVGElement, unknown>()
+      .touchable(() => false)
+      .filter((event) => event.type !== 'wheel')
+      .scaleExtent([0.6, 3])
+      .on('zoom', (event) => {
+        graphZoomTransformRef.current = event.transform;
+        zoomPendingTransformRef.current = event.transform;
+        if (zoomRafRef.current !== null) return;
+        zoomRafRef.current = window.requestAnimationFrame(() => {
+          const transform = zoomPendingTransformRef.current;
+          zoomRafRef.current = null;
+          if (!transform) return;
+          setGraphZoom(transform.k);
+          setGraphPan({ x: transform.x, y: transform.y });
+          scheduleGraphRender();
+        });
+      });
+
+    const handleZoomWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const target = event.currentTarget as SVGSVGElement;
+      const center = d3.pointer(event, target) as [number, number];
+      const zoomIntensity = 0.002;
+      const scale = Math.exp(-event.deltaY * zoomIntensity);
+      d3.select(target).call(zoomBehavior.scaleBy, scale, center);
+    };
+
+    graphZoomBehaviorRef.current = zoomBehavior;
+    d3.select(svg).call(zoomBehavior).on('dblclick.zoom', null);
+    svg.addEventListener('wheel', handleZoomWheel, { passive: false });
+    if (fullscreenSvg && fullscreenContainer) {
+      d3.select(fullscreenSvg).call(zoomBehavior).on('dblclick.zoom', null);
+      fullscreenSvg.addEventListener('wheel', handleZoomWheel, { passive: false });
+    }
+    return () => {
+      d3.select(svg).on('.zoom', null);
+      svg.removeEventListener('wheel', handleZoomWheel);
+      if (zoomRafRef.current !== null) {
+        window.cancelAnimationFrame(zoomRafRef.current);
+        zoomRafRef.current = null;
+      }
+      if (fullscreenSvg) {
+        d3.select(fullscreenSvg).on('.zoom', null);
+        fullscreenSvg.removeEventListener('wheel', handleZoomWheel);
+      }
+    };
+  }, [graphLayout]);
 
   useEffect(() => {
     if (!graphLayout || graphLoading) return;
-    drawGraph(graphCanvasRef.current, graphContainerRef.current, graphLayout, graphFocus, hoverNode, hoverEdge);
-    if (graphFullscreen) {
-      drawGraph(
-        graphFullscreenCanvasRef.current,
-        graphFullscreenRef.current,
-        graphLayout,
-        graphFocus,
-        hoverNode,
-        hoverEdge
-      );
-    }
-  }, [
-    graphLayout,
-    graphFocus,
-    graphZoom,
-    graphPan,
-    graphLoading,
-    graphFullscreen,
-    hoverNode,
-    hoverEdge,
-  ]);
+    scheduleGraphRender();
+  }, [graphLayout, graphFocus, graphLoading, graphFullscreen, hoverNode, hoverEdge]);
 
   const renderGraphCanvas = () => {
     if (graphLoading) {
@@ -658,95 +756,17 @@ export default function SentinelInterface() {
       );
     }
     return (
-      <canvas ref={graphCanvasRef} className="absolute inset-0 w-full h-full" />
+      <svg ref={graphSvgRef} className="absolute inset-0 w-full h-full" />
     );
   };
 
-  const handleGraphPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    setIsPanning(true);
-    panStartRef.current = { x: event.clientX, y: event.clientY };
-    (event.currentTarget as HTMLDivElement).setPointerCapture(event.pointerId);
-  };
-
-  const handleGraphPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!isPanning) return;
-    const deltaX = event.clientX - panStartRef.current.x;
-    const deltaY = event.clientY - panStartRef.current.y;
-    panStartRef.current = { x: event.clientX, y: event.clientY };
-    setGraphPan((prev) => ({ x: prev.x + deltaX, y: prev.y + deltaY }));
-  };
-
-  const handleGraphPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
-    setIsPanning(false);
-    (event.currentTarget as HTMLDivElement).releasePointerCapture(event.pointerId);
-  };
+  const handleGraphPointerDown = () => {};
+  const handleGraphPointerMove = () => {};
+  const handleGraphPointerUp = () => {};
 
   const handleGraphMouseMove = (event: React.MouseEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     setHoverPos({ x: event.clientX - rect.left, y: event.clientY - rect.top });
-
-    if (!graphLayout) {
-      setHoverNode(null);
-      setHoverEdge(null);
-      return;
-    }
-
-    const width = rect.width;
-    const height = rect.height;
-    if (!width || !height) return;
-
-    const viewSize = 360;
-    const scale = Math.min(width, height) / viewSize;
-    const localX = (event.clientX - rect.left - width / 2) / scale;
-    const localY = (event.clientY - rect.top - height / 2) / scale;
-    const graphX = localX / graphZoom - graphPan.x;
-    const graphY = localY / graphZoom - graphPan.y;
-
-    const visibleEdges = getVisibleEdges(graphLayout.edges);
-    const visibleNodeIds = getVisibleNodeIds(visibleEdges, graphFocus);
-    const nodes = graphLayout.nodes.filter((node) => (graphZoom < 1.1 ? visibleNodeIds.has(node.id) : true));
-
-    let nearestNode: GraphLayoutNode | null = null;
-    let nearestDistance = Infinity;
-    nodes.forEach((node) => {
-      const radius = node.isCenter ? 16 : 10;
-      const dx = graphX - node.x;
-      const dy = graphY - node.y;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist < radius + 6 && dist < nearestDistance) {
-        nearestDistance = dist;
-        nearestNode = node;
-      }
-    });
-
-    if (nearestNode) {
-      setHoverNode(nearestNode);
-      setHoverEdge(null);
-      return;
-    }
-
-    let nearestEdge: GraphEdge | null = null;
-    let edgeDistance = Infinity;
-    const nodeMap = new Map(graphLayout.nodes.map((node) => [node.id, node]));
-    visibleEdges.forEach((edge) => {
-      const src = nodeMap.get(edge.src);
-      const dst = nodeMap.get(edge.dst);
-      if (!src || !dst) return;
-      const dx = dst.x - src.x;
-      const dy = dst.y - src.y;
-      const lengthSq = dx * dx + dy * dy || 1;
-      const t = Math.max(0, Math.min(1, ((graphX - src.x) * dx + (graphY - src.y) * dy) / lengthSq));
-      const projX = src.x + t * dx;
-      const projY = src.y + t * dy;
-      const dist = Math.hypot(graphX - projX, graphY - projY);
-      if (dist < 6 && dist < edgeDistance) {
-        edgeDistance = dist;
-        nearestEdge = edge;
-      }
-    });
-
-    setHoverNode(null);
-    setHoverEdge(nearestEdge);
   };
 
   useEffect(() => {
@@ -1138,7 +1158,7 @@ export default function SentinelInterface() {
               setHoverEdge(null);
             }}
           >
-            <canvas ref={graphFullscreenCanvasRef} className="absolute inset-0 w-full h-full" />
+            <svg ref={graphFullscreenSvgRef} className="absolute inset-0 w-full h-full" />
             {graphLoading && (
               <div className="absolute inset-0 flex items-center justify-center text-[10px] font-mono text-cyan-700">
                 LOADING_GRAPH...

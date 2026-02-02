@@ -1,7 +1,5 @@
 import json
 import os
-import threading
-import time
 import asyncio
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -21,13 +19,6 @@ configure_logging("backend")
 logger = logging.getLogger(__name__)
 
 GITHUB_QUEUE_STREAM = os.getenv("GITHUB_INGEST_QUEUE", "job:queue")
-AUTO_INGEST_ENABLED = os.getenv("AUTO_INGEST_ENABLED", "false").lower() in {
-    "1",
-    "true",
-    "yes",
-}
-AUTO_INGEST_INTERVAL_SECONDS = int(os.getenv("AUTO_INGEST_INTERVAL_SECONDS", "3600"))
-AUTO_INGEST_WINDOW_MINUTES = int(os.getenv("AUTO_INGEST_WINDOW_MINUTES", "10"))
 
 app = FastAPI(title="Spectre Backend")
 
@@ -81,15 +72,6 @@ async def startup_event():
     logger.info(
         "======================================================================"
     )
-
-    if AUTO_INGEST_ENABLED:
-        logger.info(
-            "Auto-ingest enabled: interval=%ss window=%sm",
-            AUTO_INGEST_INTERVAL_SECONDS,
-            AUTO_INGEST_WINDOW_MINUTES,
-        )
-        thread = threading.Thread(target=_auto_enqueue_loop, daemon=True)
-        thread.start()
 
 
 @app.on_event("shutdown")
@@ -150,17 +132,9 @@ def _enqueue_public_ingest(window_minutes: int) -> str:
         "scheduled_at": datetime.now(timezone.utc).isoformat(),
         "window_minutes": window_minutes,
     }
-    return client.xadd(GITHUB_QUEUE_STREAM, {"payload": json.dumps(payload)})
-
-
-def _auto_enqueue_loop() -> None:
-    while True:
-        try:
-            job_id = _enqueue_public_ingest(window_minutes=AUTO_INGEST_WINDOW_MINUTES)
-            logger.info("Auto-enqueued ingest job %s", job_id)
-        except Exception as exc:
-            logger.error("Auto-enqueue failed: %s", exc)
-        time.sleep(AUTO_INGEST_INTERVAL_SECONDS)
+    job_id = client.xadd(GITHUB_QUEUE_STREAM, {"payload": json.dumps(payload)})
+    logger.info("📨 Enqueued ingest job %s", job_id)
+    return job_id
 
 
 # --- Graph & Dashboard Endpoints ---
@@ -175,7 +149,15 @@ def _execute_ch(sql: str) -> dict:
         result_text = service.query(full_sql)
         return json.loads(result_text)
     except Exception as e:
-        # In a real app, log error
+        sql_preview = " ".join(sql.split())
+        if len(sql_preview) > 200:
+            sql_preview = f"{sql_preview[:200]}..."
+        logger.error(
+            "ClickHouse query failed | sql=%s | error=%s",
+            sql_preview,
+            e,
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 

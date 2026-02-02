@@ -49,7 +49,7 @@ def _schedule_next(client) -> str:
         "window_minutes": 10,
     }
     job_id = client.xadd(GITHUB_QUEUE_STREAM, {"payload": json.dumps(payload)})
-    logger.info(f"Scheduled next job: {job_id}")
+    logger.info(f"🔁 Scheduled next job: {job_id}")
     return job_id
 
 
@@ -59,7 +59,7 @@ def _parse_payload(fields: dict) -> dict:
 
 
 def run_worker() -> None:
-    logger.info("Starting GitHub worker...")
+    logger.info("🚀 Starting GitHub worker...")
     client = _redis_client()
     _ensure_group(client)
 
@@ -83,7 +83,7 @@ def run_worker() -> None:
                 if not streams:
                     try:
                         if client.xlen(GITHUB_QUEUE_STREAM) == 0:
-                            logger.info("Stream empty, seeding initial job")
+                            logger.info("🧪 Stream empty, seeding initial job")
                             _schedule_next(client)
                     except redis.RedisError as e:
                         logger.error(f"Redis error checking stream length: {e}")
@@ -92,7 +92,7 @@ def run_worker() -> None:
 
                 for _, messages in streams:
                     for message_id, fields in messages:
-                        logger.info(f"Processing message {message_id}")
+                        logger.info(f"📥 Read ingest job {message_id}")
                         try:
                             payload = _parse_payload(fields)
                             minutes = int(payload.get("window_minutes", 10))
@@ -140,6 +140,7 @@ def run_worker() -> None:
                             client.xack(
                                 GITHUB_QUEUE_STREAM, GITHUB_QUEUE_GROUP, message_id
                             )
+                            _schedule_next(client)
                         except Exception as e:
                             logger.error(
                                 f"Failed to process message {message_id}: {e}",
@@ -153,7 +154,7 @@ def run_worker() -> None:
                 logger.error(f"Worker loop error: {e}", exc_info=True)
                 time.sleep(5)
     except KeyboardInterrupt:
-        logger.info("Shutdown requested; stopping worker")
+        logger.info("🛑 Shutdown requested; stopping worker")
     finally:
         try:
             client.close()
