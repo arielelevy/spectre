@@ -4,11 +4,7 @@ import {
   LayoutDashboard,
   FileText,
   User,
-  Send,
-  FileCode,
-  Globe,
   ScanLine,
-  ChevronRight,
 } from 'lucide-react';
 import { AreaChart, Area, ResponsiveContainer } from 'recharts';
 import HudCard from './HudCard';
@@ -26,7 +22,7 @@ const riskData = [
   { time: '24:00', value: 25 },
 ];
 
-const threatFeed = [
+const threatFeed: Threat[] = [
   { id: 'T-802', type: 'INJECTION', asset: 'login_module.ts', risk: 'CRITICAL', time: 'T-00:05:00', details: 'Detected a potential SQL injection signature in user input parsing.' },
   { id: 'T-801', type: 'ANOMALY', asset: 'payment_gateway.c', risk: 'HIGH', time: 'T-01:12:30', details: 'Unusual outbound packet frequency from sensitive financial module.' },
   { id: 'T-800', type: 'ACCESS', asset: 'admin_routes.js', risk: 'MED', time: 'T-02:45:00', details: 'Multiple failed authentication attempts from an unknown subnet.' },
@@ -103,11 +99,6 @@ export default function SentinelInterface() {
   const [graphMode, setGraphMode] = useState<'overview' | 'focus'>('overview');
   const [graphDataset, setGraphDataset] = useState<'repos' | 'repoUsers' | 'repoLinks' | 'userLinks'>('repos');
   const [selectedEdge, setSelectedEdge] = useState<GraphEdge | null>(null);
-  const [graphSearch, setGraphSearch] = useState('');
-  const [graphSearchResults, setGraphSearchResults] = useState<GraphNode[]>([]);
-  const [graphSearchLoading, setGraphSearchLoading] = useState(false);
-  const [graphSearchError, setGraphSearchError] = useState('');
-  const panStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const graphContainerRef = useRef<HTMLDivElement | null>(null);
   const graphViewSnapshotRef = useRef<GraphSnapshot | null>(null);
   const hoverNodeRef = useRef<GraphNode | null>(null);
@@ -116,7 +107,6 @@ export default function SentinelInterface() {
   const graphZoomRef = useRef(1);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
-  const defaultGraphSeed = 'api';
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -131,7 +121,7 @@ export default function SentinelInterface() {
         const data = JSON.parse(event.data);
         setKpis(data);
       } catch (error) {
-        return;
+        console.error('[WebSocket] Failed to parse KPI data:', error);
       }
     };
 
@@ -167,9 +157,7 @@ export default function SentinelInterface() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [apiBaseUrl]);
-
-  const handleGraphWheel = () => {};
+  }, [apiBaseUrl, graphDataset]);
 
   const updateGraphSnapshot = (override?: Partial<GraphSnapshot>) => {
     graphViewSnapshotRef.current = {
@@ -292,8 +280,6 @@ export default function SentinelInterface() {
     }
   };
 
-  const zoomIn = () => {};
-  const zoomOut = () => {};
   const resetZoom = () => {
     setGraphZoom(1);
     setGraphPan({ x: 0, y: 0 });
@@ -445,7 +431,7 @@ export default function SentinelInterface() {
                       BACK
                     </button>
                     <button
-                      onClick={loadInitialGraph}
+                      onClick={() => loadInitialGraph()}
                       className="px-2 py-1 border border-white/5 text-slate-400 hover:text-slate-200"
                     >
                       RESET
@@ -514,7 +500,6 @@ export default function SentinelInterface() {
               <div
                 ref={graphContainerRef}
                 className="flex-1 min-h-[18rem] bg-black/30 border border-white/5 rounded-sm relative overflow-hidden"
-                onWheel={handleGraphWheel}
                 onMouseMove={handleGraphMouseMove}
                 onMouseLeave={() => {
                   setHoverNode(null);
@@ -683,162 +668,6 @@ export default function SentinelInterface() {
               </div>
             )}
           </HudCard>
-
-          {false && (
-          <HudCard title="GRAPH_VIEW" className="h-[26rem] sm:h-[28rem] md:h-[22rem]">
-            <div className="flex flex-col h-full gap-3">
-              <div className="flex flex-col gap-2 text-[9px] font-mono text-slate-500">
-                <div className="flex items-center justify-between gap-2">
-                  <span>FOCUS: {graphFocus || (graphDataset === 'repoUsers' ? 'REPO_USERS' : graphDataset === 'repoLinks' ? 'REPO_LINKS' : graphDataset === 'userLinks' ? 'USER_LINKS' : 'TOP_NODES')}</span>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={resetViewToSnapshot}
-                      className="px-2 py-1 border border-white/5 text-slate-400 hover:text-slate-200"
-                    >
-                      BACK
-                    </button>
-                    <button
-                      onClick={loadInitialGraph}
-                      className="px-2 py-1 border border-white/5 text-slate-400 hover:text-slate-200"
-                    >
-                      RESET
-                    </button>
-                    <button
-                      onClick={() => setGraphFullscreen(true)}
-                      className="px-2 py-1 border border-white/5 text-slate-400 hover:text-slate-200"
-                    >
-                      FULL
-                    </button>
-                  </div>
-                </div>
-                <div className="flex items-center gap-1 text-[8px] font-mono">
-                  <button
-                    onClick={() => loadInitialGraph('repos', graphFocus)}
-                    className={`px-2 py-1 border ${
-                      graphDataset === 'repos'
-                        ? 'border-cyan-500/60 text-cyan-200'
-                        : 'border-white/5 text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    REPOS
-                  </button>
-                  <button
-                    onClick={() => loadInitialGraph('repoUsers', graphFocus)}
-                    className={`px-2 py-1 border ${
-                      graphDataset === 'repoUsers'
-                        ? 'border-emerald-500/60 text-emerald-200'
-                        : 'border-white/5 text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    REPO_USERS
-                  </button>
-                  <button
-                    onClick={() => loadInitialGraph('repoLinks', graphFocus)}
-                    className={`px-2 py-1 border ${
-                      graphDataset === 'repoLinks'
-                        ? 'border-indigo-500/60 text-indigo-200'
-                        : 'border-white/5 text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    REPO_LINKS
-                  </button>
-                  <button
-                    onClick={() => loadInitialGraph('userLinks', graphFocus)}
-                    className={`px-2 py-1 border ${
-                      graphDataset === 'userLinks'
-                        ? 'border-amber-500/60 text-amber-200'
-                        : 'border-white/5 text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    USER_LINKS
-                  </button>
-                </div>
-              </div>
-
-              {graphError && (
-                <div className="text-[9px] font-mono text-rose-400">{graphError}</div>
-              )}
-
-              <div
-                ref={graphContainerRef}
-                className="flex-1 min-h-[16rem] bg-black/30 border border-white/5 rounded-sm relative overflow-hidden"
-                onWheel={handleGraphWheel}
-                onMouseMove={handleGraphMouseMove}
-                onMouseLeave={() => {
-                  setHoverNode(null);
-                  setHoverEdge(null);
-                }}
-              >
-                <SigmaGraphView
-                  data={graphData}
-                  loading={graphLoading}
-                  error={graphError}
-                  focusId={graphFocus}
-                  selectedEdge={selectedEdge}
-                  onNodeClick={(node) => handleFocusNode(node.id, node.type)}
-                  onEdgeClick={(edge) => {
-                    if (selectedEdge && selectedEdge.src === edge.src && selectedEdge.dst === edge.dst) {
-                      restoreGraphSnapshot();
-                      return;
-                    }
-                    updateGraphSnapshot({ selectedEdge: null });
-                    setSelectedEdge(edge);
-                  }}
-                  onHoverNode={setHoverNode}
-                  onHoverEdge={setHoverEdge}
-                  onStageClick={() => {
-                    setSelectedEdge(null);
-                  }}
-                  onZoomOutReset={() => {
-                    loadInitialGraph();
-                    setGraphFocus('');
-                    setGraphMode('overview');
-                  }}
-                  onMouseMove={handleGraphMouseMove}
-                  onMouseLeave={() => {
-                    setHoverNode(null);
-                    setHoverEdge(null);
-                  }}
-                />
-                {hoverNode && (
-                  <div
-                    className="absolute pointer-events-none bg-black/80 border border-cyan-500/20 text-[9px] font-mono text-slate-200 px-3 py-2"
-                    style={{ left: hoverPos.x + 12, top: hoverPos.y + 12 }}
-                  >
-                    <div className="text-cyan-300">{hoverNode.id}</div>
-                    <div className="text-slate-400">{hoverNode.type}</div>
-                    {hoverNode.attrs?.owner && hoverNode.attrs?.name && (
-                      <div className="text-slate-500">
-                        {hoverNode.attrs.owner}/{hoverNode.attrs.name}
-                      </div>
-                    )}
-                  </div>
-                )}
-                {hoverEdge && (
-                <div
-                  className="absolute pointer-events-none bg-black/80 border border-emerald-500/20 text-[9px] font-mono text-slate-200 px-3 py-2"
-                  style={{ left: hoverPos.x + 12, top: hoverPos.y + 12 }}
-                >
-                  <div className="text-emerald-300">{hoverEdge.type}</div>
-                  <div className="text-slate-400">{hoverEdge.src} → {hoverEdge.dst}</div>
-                  {hoverEdge.attrs?.shared_users && (
-                    <div className="text-slate-500">shared_users: {hoverEdge.attrs.shared_users}</div>
-                  )}
-                  {hoverEdge.attrs?.shared_repos && (
-                    <div className="text-slate-500">shared_repos: {hoverEdge.attrs.shared_repos}</div>
-                  )}
-                  {hoverEdge.weight && (
-                    <div className="text-slate-500">weight: {hoverEdge.weight}</div>
-                  )}
-                  {selectedEdge && selectedEdge.src === hoverEdge.src && selectedEdge.dst === hoverEdge.dst && (
-                    <div className="text-[8px] text-amber-300 mt-1">click to reset view</div>
-                  )}
-                </div>
-                )}
-              </div>
-            </div>
-          </HudCard>
-          )}
         </div>
 
       </main>
@@ -912,7 +741,6 @@ export default function SentinelInterface() {
           </div>
           <div
             className="flex-1 relative overflow-hidden"
-            onWheel={handleGraphWheel}
             onMouseMove={handleGraphMouseMove}
             onMouseLeave={() => {
               setHoverNode(null);

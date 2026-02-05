@@ -90,7 +90,6 @@ export default function SigmaGraphView({
   const onStageClickRef = useRef(onStageClick);
   const onZoomOutResetRef = useRef(onZoomOutReset);
   const focusIdRef = useRef(focusId);
-  const zoomResetArmedRef = useRef(true);
   const dragStateRef = useRef<{
     nodeId: string | null;
     isDragging: boolean;
@@ -155,8 +154,6 @@ export default function SigmaGraphView({
         labelRenderedSizeThreshold: 0,
         labelDensity: 1,
         labelGridCellSize: 60,
-        enableEdgeClickEvents: true,
-        enableEdgeHoverEvents: true,
         enableEdgeEvents: true,
         defaultEdgeColor: '#0e7490',
       });
@@ -307,7 +304,7 @@ export default function SigmaGraphView({
       return attrs;
     });
 
-    sigma.setSetting('edgeReducer', (edge, attrs) => {
+    sigma.setSetting('edgeReducer', (_edge, attrs) => {
       if (selectedEdge && attrs.data) {
         const dataEdge = attrs.data as GraphEdge;
         const isMatch =
